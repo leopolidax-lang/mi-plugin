@@ -1,10 +1,11 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.3)
+//  Plugin LACartoons para Zynora  (v1.1.4)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
-//  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe de ok.ru)
+//  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
-const WEB = "https://www.lacartoons.com";
+const WEB = "https://lacartoons.com";
 const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+const UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const CANALES = "Nickelodeon|Cartoon Network|Fox Kids|Hanna Barbera|Disney|Warner Channel|Marvel|Otros";
 const RE_TARJETA = new RegExp("^(.*?)\\s*(?:(" + CANALES + ")\\s+)?(\\d{4})\\s+(\\d{1,2})$");
 const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "the", "of", "and", "a", "to", "serie", "animada"];
@@ -22,9 +23,8 @@ function norm(s) {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
 function palabras(s) { return norm(s).split(" ").filter(function (w) { return w && VACIAS.indexOf(w) < 0; }); }
-function primero(html, css) { const r = kino.html.select(html, css); return r.length ? r[0] : null; }
 
-// fetch con User-Agent de navegador (algunos sitios bloquean el agente por defecto)
+// Fetch con cabeceras de navegador estándar
 function pedir(url, referer) {
   const h = { "User-Agent": UA, "Accept-Language": "es-419,es;q=0.9", "Accept": "text/html,application/xhtml+xml,*/*" };
   if (referer) h.Referer = referer;
@@ -47,7 +47,6 @@ function leerTarjetas(html) {
 
 async function cargarCatalogo() {
   if (CATALOGO) return CATALOGO;
-  // 1) copia guardada (válida 7 días)
   try {
     const g = kino.storage.get("cat");
     if (g) {
@@ -55,7 +54,7 @@ async function cargarCatalogo() {
       if (o && Date.now() - o.t < 7 * 86400000 && o.l && o.l.length > 20) { CATALOGO = o.l; return CATALOGO; }
     }
   } catch (e) {}
-  // 2) descargar todas las páginas del inicio
+
   const r1 = await pedir(WEB + "/");
   if (!r1.ok) { ULTIMO_ERROR = "HTTP " + r1.status; return []; }
   const h1 = r1.text();
@@ -75,7 +74,6 @@ async function cargarCatalogo() {
   return CATALOGO;
 }
 
-// Puntaje de coincidencia entre una consulta y un título (0 a 1)
 function puntaje(titulo, consulta) {
   const q = palabras(consulta), t = palabras(titulo);
   if (!q.length || !t.length) return 0;
@@ -99,7 +97,6 @@ export async function search(q) {
     return { id: "lc-" + r.x.n, ref: abs("/serie/" + r.x.n), title: r.x.title, kind: "series", year: r.x.year, poster: "" };
   });
   if (items.length) return items;
-  // Sin resultados: se muestra una línea de diagnóstico para saber qué pasó
   const motivo = ULTIMO_ERROR || (cat.length + " series revisadas, ninguna coincide con «" + q.q + "»");
   return [{ id: "lc-diag", ref: "diag:" + motivo.slice(0, 200), title: "[Diagnóstico] " + motivo, kind: "movie" }];
 }
@@ -120,61 +117,91 @@ export async function episodes(ref) {
   return { episodes: eps };
 }
 
-// ---------- reproductor de ok.ru ----------
-const UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
 function limpiar(t) {
   return String(t).replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&#x2F;/gi, "/")
     .replace(/\\+u0026/gi, "&").replace(/\\+u003d/gi, "=").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
 }
+
+// Extractor unificado
 function buscarVideo(html) {
   const t = limpiar(html);
+  
+  // 1. Detección genérica de manifiestos HLS/Dash (Ideal para ok.ru y cubeembed plano)
   let m = t.match(/"(?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)":"(https:\/\/[^"]+)"/);
   if (m) return { url: m[1], mime: "application/x-mpegURL" };
   m = t.match(/"ondemandDash":"(https:\/\/[^"]+)"/);
   if (m) return { url: m[1], mime: "application/dash+xml" };
+
+  // 2. Detección directa de URLs con extensión .m3u8 en texto plano (Patrón CubeEmbed)
+  m = t.match(/(https?:\/\/[^\s"'\\<>]+?\.m3u8(?:\?[^\s"'\\<>]*)?)/i);
+  if (m) return { url: m[0], mime: "application/x-mpegURL" };
+
+  // 3. Raspado de MP4s por calidades (ok.ru heredado)
   const orden = ["full", "hd", "sd", "low", "lowest", "mobile"], hallados = {};
+  let mm;
   const re = /"name":"([a-z0-9]+)"[^{}]*?"url":"(https:\/\/[^"]+)"/g;
-  while ((m = re.exec(t))) hallados[m[1]] = m[2];
+  while ((mm = re.exec(t))) hallados[mm[1]] = mm[2];
   for (const n of orden) if (hallados[n]) return { url: hallados[n], mime: "video/mp4" };
-  m = t.match(/https?:\/\/[^\s"'\\<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'\\<>]*)?/i);
-  return m ? { url: m[0], mime: /\.m3u8/i.test(m[0]) ? "application/x-mpegURL" : "" } : null;
+
+  m = t.match(/https?:\/\/[^\s"'\\<>]+?\.mp4(?:\?[^\s"'\\<>]*)?/i);
+  return m ? { url: m[0], mime: "video/mp4" } : null;
 }
+
 function embedDe(html) {
   for (const f of kino.html.select(html, "iframe")) {
     const u = abs(f.attrs["data-src"] || f.attrs.src);
     if (u.indexOf("https://") === 0) return u;
   }
-  const m = String(html).match(/https?:\/\/(?:www\.)?ok\.ru\/videoembed\/\d+/i);
+  const m = String(html).match(/https?:\/\/(?:www\.)?(?:ok\.ru\/videoembed|cubeembed\.rpmvid\.com\/[^\s"'<>]+)\d*/i);
   return m ? m[0] : "";
 }
+
 function pistas(t) {
   const s = String(t);
-  return "hls:" + (/hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl/.test(s) ? 1 : 0) + " vid:" + (/"videos"|&quot;videos/.test(s) ? 1 : 0) + " opt:" + (/data-options/.test(s) ? 1 : 0);
+  return "hls:" + (/hls|\.m3u8/.test(s) ? 1 : 0) + " vid:" + (/"videos"|&quot;videos/.test(s) ? 1 : 0);
 }
 
 export async function resolve(ref) {
   if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "LACartoons: " + String(ref).slice(5));
+  
   const pagina = await pedir(ref, WEB + "/");
-  if (!pagina.ok) throw kino.error("not_found", "LACartoons respondió HTTP " + pagina.status + " al abrir el episodio");
+  if (!pagina.ok) throw kino.error("not_found", "LACartoons respondió HTTP " + pagina.status);
+  
   const html = pagina.text();
   let v = buscarVideo(html), embed = "", info = "pag " + html.length;
+  
   if (!v) {
     embed = embedDe(html);
     info += "; embed " + (embed ? embed.replace("https://", "").slice(0, 45) : "NO");
+    
     if (embed) {
-      // variantes a probar: la API del reproductor (si usa #id), el embed tal cual y la variante /video/
       const intentos = [];
+      
+      // Si es un enlace cifrado de OK.RU con hashes API
       const hm = embed.match(/^(https:\/\/[^\/#?]+)\/?#([A-Za-z0-9_-]+)/);
-      if (hm) intentos.push(hm[1] + "/api/v1/video?id=" + hm[2] + "&w=1280&h=720&r=" + encodeURIComponent(WEB + "/"));
+      if (hm && embed.includes("ok.ru")) {
+        intentos.push(hm[1] + "/api/v1/video?id=" + hm[2] + "&w=1280&h=720&r=" + encodeURIComponent(WEB + "/"));
+      }
+      
       intentos.push(embed);
-      if (embed.indexOf("/videoembed/") >= 0) intentos.push(embed.replace("/videoembed/", "/video/"));
+      
+      if (embed.indexOf("/videoembed/") >= 0) {
+        intentos.push(embed.replace("/videoembed/", "/video/"));
+      }
+
       for (let i = 0; i < intentos.length && !v; i++) {
         const u = intentos[i], et = "ABC"[i];
         try {
-          const r = await kino.fetch(u, { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": embed.split("#")[0] } });
+          // El Referer simula que el reproductor se abre dentro de sí mismo o desde LACartoons
+          const r = await kino.fetch(u, { 
+            headers: { 
+              "User-Agent": UA_PC, 
+              "Accept-Language": "es-419,es;q=0.9", 
+              "Referer": u.includes("rpmvid") ? WEB + "/" : embed.split("#")[0] 
+            } 
+          });
           const tx = r.text();
-          info += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx) + " «" + tx.slice(0, 40).replace(/\s+/g, " ") + "»";
+          info += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx);
           v = buscarVideo(tx);
         } catch (e) {
           info += "; " + et + " error:" + String((e && e.message) || e).slice(0, 60);
@@ -182,8 +209,14 @@ export async function resolve(ref) {
       }
     }
   }
+  
   if (!v) throw kino.error("not_found", "No se encontró el video [" + info + "]");
-  let ori = "https://ok.ru/"; try { if (embed) ori = new URL(embed).origin + "/"; } catch (e) {}
+  
+  let ori = "https://ok.ru"; 
+  try { 
+    if (embed) ori = new URL(embed).origin + "/"; 
+  } catch (e) {}
+  
   const salida = { url: v.url, headers: { Referer: ori, "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
   return salida;
