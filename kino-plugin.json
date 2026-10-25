@@ -1,0 +1,15 @@
+{
+  "id": "mi-plugin",
+  "name": "Mi plugin",
+  "version": "1.0.0",
+  "apiVersion": 4,
+  "entry": "plugin.js",
+  "description": "Plugin propio que junta varias fuentes",
+  "author": "tu-usuario-de-github",
+  "hosts": ["ejemplo1.com", "*.ejemplo1.com", "ejemplo2.com", "*.ejemplo2.com"],
+  "fetchHosts": "any",
+  "streamHosts": "any",
+  "capabilities": ["search", "resolve"],
+  "color": "#7C5CFF",
+  "categories": ["movies"]
+}
