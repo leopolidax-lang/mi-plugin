@@ -1,99 +1,150 @@
 // ============================================================
-//  PLANTILLA DE PLUGIN PARA ZYNORA (varias fuentes en un solo plugin)
-//  Solo tienes que editar la lista de abajo. No hace falta tocar el resto.
+//  Plugin LACartoons para Zynora
+//  Estructura del sitio:
+//    /serie/NUMERO                  -> ficha de la serie con la lista de episodios
+//    /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (trae un iframe de ok.ru)
 // ============================================================
+const WEB = "https://www.lacartoons.com";
+const CANALES = "Nickelodeon|Cartoon Network|Fox Kids|Hanna Barbera|Disney|Warner Channel|Marvel|Otros";
+// Texto de cada tarjeta: "Título Canal Año Valoración"
+const RE_TARJETA = new RegExp("^(.*?)\\s*(?:(" + CANALES + ")\\s+)?(\\d{4})\\s+(\\d{1,2})$");
 
-// 1) AQUÍ ELIGES TUS FUENTES. Agrega un bloque { ... } por cada página web.
-//    - web:        la dirección de la página (sin / al final)
-//    - buscar:     la ruta del buscador de esa página; {q} se cambia por lo que se busca
-//    - resultado:  selector CSS de CADA resultado de la lista de búsqueda
-//    - titulo:     selector CSS del título, dentro de cada resultado
-//    - enlace:     selector CSS del enlace <a> que abre la película, dentro de cada resultado
-//    - poster:     selector CSS de la imagen del póster, dentro de cada resultado (opcional)
-//    - reproductor: selector CSS de donde está el video en la página de la película (opcional, por defecto "iframe")
-const SOURCES = [
-  {
-    nombre: "Fuente 1",
-    web: "https://ejemplo1.com",
-    buscar: "/buscar?q={q}",
-    resultado: ".resultado",
-    titulo: "h3",
-    enlace: "a",
-    poster: "img"
-  },
-  {
-    nombre: "Fuente 2",
-    web: "https://ejemplo2.com",
-    buscar: "/?s={q}",
-    resultado: "article",
-    titulo: "h2",
-    enlace: "a",
-    poster: "img"
-  }
-];
+let CATALOGO = null; // se llena solo si el buscador del sitio no responde
 
-// ============================================================
-//  2) DE AQUÍ PARA ABAJO NO HACE FALTA CAMBIAR NADA
-// ============================================================
-function abs(base, u) {
+function abs(u) {
   if (!u) return "";
   if (u.indexOf("//") === 0) return "https:" + u;
   if (/^https?:\/\//i.test(u)) return u;
-  return u[0] === "/" ? base + u : base + "/" + u;
+  return u[0] === "/" ? WEB + u : WEB + "/" + u;
 }
-function hash(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return h.toString(36); }
-function first(html, css) { const r = kino.html.select(html, css); return r.length ? r[0] : null; }
-function findVideo(html) {
-  const clean = String(html).replace(/\\\//g, "/");
-  const m = clean.match(/https?:\/\/[^\s"'\\<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'\\<>]*)?/i);
-  return m ? m[0] : "";
+function norm(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+function primero(html, css) { const r = kino.html.select(html, css); return r.length ? r[0] : null; }
+
+// Lee las tarjetas de series de una página (inicio, búsqueda o paginación)
+function leerTarjetas(html) {
+  const out = [], vistos = {};
+  for (const a of kino.html.select(html, 'a[href*="/serie/"]')) {
+    const m = String(a.attrs.href || "").match(/\/serie\/(\d+)\/?$/);
+    if (!m || vistos[m[1]]) continue;
+    const t = String(a.text || "").trim();
+    if (!t) continue;
+    vistos[m[1]] = 1;
+    const mm = t.match(RE_TARJETA);
+    const im = primero(a.html, "img");
+    const poster = im ? abs(im.attrs["data-src"] || im.attrs.src) : "";
+    out.push({
+      id: "lc-" + m[1],
+      ref: abs("/serie/" + m[1]),
+      title: ((mm ? mm[1] : t).trim() || t).slice(0, 150),
+      kind: "series",
+      year: mm ? mm[3] : "",
+      poster: poster.indexOf("https://") === 0 ? poster : ""
+    });
+  }
+  return out;
+}
+
+function coincide(titulo, consulta) {
+  const t = norm(titulo), palabras = norm(consulta).split(" ").filter(Boolean);
+  return palabras.length > 0 && palabras.every(function (p) { return t.indexOf(p) >= 0; });
+}
+
+async function cargarCatalogo() {
+  if (CATALOGO) return CATALOGO;
+  const r1 = await kino.fetch(WEB + "/");
+  if (!r1.ok) return [];
+  const h1 = r1.text();
+  let max = 1;
+  (h1.match(/page=(\d+)/g) || []).forEach(function (x) { max = Math.max(max, Number(x.slice(5)) || 1); });
+  max = Math.min(max, 60);
+  const todas = [leerTarjetas(h1)];
+  const paginas = [];
+  for (let p = 2; p <= max; p++) paginas.push(p);
+  const resto = await Promise.all(paginas.map(async function (p) {
+    try {
+      const r = await kino.fetch(WEB + "/?page=" + p);
+      return r.ok ? leerTarjetas(r.text()) : [];
+    } catch (e) { return []; }
+  }));
+  const visto = {};
+  CATALOGO = todas.concat(resto).flat().filter(function (x) { if (visto[x.id]) return false; visto[x.id] = 1; return true; });
+  return CATALOGO;
 }
 
 export async function search(q) {
-  const query = encodeURIComponent(q.q);
-  const listas = await Promise.all(SOURCES.map(async (src, i) => {
+  const consulta = q.q;
+  let items = [];
+  try {
+    const r = await kino.fetch(WEB + "/?Titulo=" + encodeURIComponent(consulta));
+    if (r.ok) items = leerTarjetas(r.text()).filter(function (x) { return coincide(x.title, consulta); });
+  } catch (e) {}
+  if (!items.length) {
     try {
-      const res = await kino.fetch(src.web + src.buscar.replace("{q}", query));
-      if (!res.ok) return [];
-      const out = [];
-      for (const el of kino.html.select(res.text(), src.resultado).slice(0, 15)) {
-        const a = first(el.html, src.enlace), t = first(el.html, src.titulo);
-        const href = a && a.attrs.href;
-        const title = (t && t.text) || (a && a.text);
-        if (!href || !title) continue;
-        const im = src.poster ? first(el.html, src.poster) : null;
-        const poster = im ? abs(src.web, im.attrs["data-src"] || im.attrs.src) : "";
-        const url = abs(src.web, href);
-        out.push({
-          id: i + "-" + hash(url),
-          ref: JSON.stringify({ i: i, url: url }),
-          title: title.slice(0, 150),
-          kind: "movie",
-          poster: poster.indexOf("https://") === 0 ? poster : ""
-        });
-      }
-      return out;
-    } catch (e) { return []; }
-  }));
-  return listas.flat();
+      items = (await cargarCatalogo()).filter(function (x) { return coincide(x.title, consulta); });
+    } catch (e) {}
+  }
+  return items.slice(0, 20);
+}
+
+export async function episodes(ref) {
+  const r = await kino.fetch(ref);
+  if (!r.ok) throw kino.error("not_found", "No se pudo abrir la serie", { userMessage: "No se pudo abrir la serie en LACartoons." });
+  const eps = [], vistos = {};
+  for (const a of kino.html.select(r.text(), 'a[href*="/serie/capitulo/"]')) {
+    const url = abs(a.attrs.href);
+    if (vistos[url]) continue;
+    const num = String(a.text || "").match(/Cap[ií]tulo\s+(\d+)\s*-?\s*(.*)$/i);
+    if (!num) continue;
+    const t = url.match(/[?&]t=(\d+)/);
+    vistos[url] = 1;
+    eps.push({ ref: url, season: t ? Number(t[1]) : 1, number: Number(num[1]), title: (num[2] || "").slice(0, 150) });
+  }
+  return { episodes: eps };
+}
+
+// ---------- lectura del reproductor de ok.ru ----------
+function limpiar(t) {
+  return String(t)
+    .replace(/&quot;/g, '"').replace(/&amp;/g, "&")
+    .replace(/\\+u0026/gi, "&").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
+}
+function buscarVideo(html) {
+  const t = limpiar(html);
+  let m = t.match(/"(?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)":"(https:\/\/[^"]+)"/);
+  if (m) return { url: m[1], mime: "application/x-mpegURL" };
+  const orden = ["full", "hd", "sd", "low", "lowest", "mobile"], hallados = {};
+  const re = /"name":"([a-z]+)","url":"(https:\/\/[^"]+)"/g;
+  while ((m = re.exec(t))) hallados[m[1]] = m[2];
+  for (const n of orden) if (hallados[n]) return { url: hallados[n], mime: "" };
+  m = t.match(/https?:\/\/[^\s"'\\<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'\\<>]*)?/i);
+  return m ? { url: m[0], mime: /\.m3u8/i.test(m[0]) ? "application/x-mpegURL" : "" } : null;
+}
+function embedDe(html) {
+  for (const f of kino.html.select(html, "iframe")) {
+    const u = abs(f.attrs["data-src"] || f.attrs.src);
+    if (u.indexOf("https://") === 0) return u;
+  }
+  const m = String(html).match(/https?:\/\/(?:www\.)?ok\.ru\/videoembed\/\d+/i);
+  return m ? m[0] : "";
 }
 
 export async function resolve(ref) {
-  const d = JSON.parse(ref), src = SOURCES[d.i];
-  const page = await kino.fetch(d.url);
-  let link = findVideo(page.text());
-  if (!link) {
-    const frames = kino.html.select(page.text(), src.reproductor || "iframe");
-    for (const f of frames.slice(0, 5)) {
-      const u = abs(src.web, f.attrs["data-src"] || f.attrs.src);
-      if (u.indexOf("https://") !== 0) continue;
+  const pagina = await kino.fetch(ref);
+  const html = pagina.text();
+  let v = buscarVideo(html);
+  if (!v) {
+    const embed = embedDe(html);
+    if (embed) {
       try {
-        const r = await kino.fetch(u, { headers: { Referer: d.url } });
-        link = findVideo(r.text());
-        if (link) break;
+        const r = await kino.fetch(embed, { headers: { Referer: WEB + "/" } });
+        v = buscarVideo(r.text());
       } catch (e) {}
     }
   }
-  if (!link) throw kino.error("not_found", "No se encontró el video", { userMessage: "No se encontró el video en esa página. Prueba otra fuente." });
-  return { url: link, headers: { Referer: d.url } };
+  if (!v) throw kino.error("not_found", "No se encontró el video", { userMessage: "No se encontró el video de este episodio. Prueba otra fuente." });
+  const salida = { url: v.url, headers: { Referer: "https://ok.ru/" } };
+  if (v.mime) salida.mime = v.mime;
+  return salida;
 }

@@ -1,15 +1,14 @@
 {
-  "id": "mi-plugin",
-  "name": "Mi plugin",
-  "version": "1.0.0",
+  "id": "lacartoons",
+  "name": "LACartoons",
+  "version": "1.1.0",
   "apiVersion": 4,
   "entry": "plugin.js",
-  "description": "Plugin propio que junta varias fuentes",
-  "author": "tu-usuario-de-github",
-  "hosts": ["ejemplo1.com", "*.ejemplo1.com", "ejemplo2.com", "*.ejemplo2.com"],
-  "fetchHosts": "any",
+  "description": "Series clásicas y caricaturas en español latino de lacartoons.com",
+  "author": "leopolidax-lang",
+  "hosts": ["lacartoons.com", "*.lacartoons.com", "ok.ru", "*.ok.ru"],
   "streamHosts": "any",
-  "capabilities": ["search", "resolve"],
-  "color": "#7C5CFF",
-  "categories": ["movies"]
+  "capabilities": ["search", "episodes", "resolve"],
+  "color": "#F5A623",
+  "categories": ["series"]
 }
