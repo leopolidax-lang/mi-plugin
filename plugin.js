@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.2)
+//  Plugin LACartoons para Zynora  (v1.1.3)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe de ok.ru)
 // ============================================================
@@ -163,23 +163,28 @@ export async function resolve(ref) {
     embed = embedDe(html);
     info += "; embed " + (embed ? embed.replace("https://", "").slice(0, 45) : "NO");
     if (embed) {
-      // se prueban dos variantes del reproductor, con cabeceras de navegador de PC
-      const intentos = [embed, embed.replace("/videoembed/", "/video/")];
-      for (const u of intentos) {
+      // variantes a probar: la API del reproductor (si usa #id), el embed tal cual y la variante /video/
+      const intentos = [];
+      const hm = embed.match(/^(https:\/\/[^\/#?]+)\/?#([A-Za-z0-9_-]+)/);
+      if (hm) intentos.push(hm[1] + "/api/v1/video?id=" + hm[2] + "&w=1280&h=720&r=" + encodeURIComponent(WEB + "/"));
+      intentos.push(embed);
+      if (embed.indexOf("/videoembed/") >= 0) intentos.push(embed.replace("/videoembed/", "/video/"));
+      for (let i = 0; i < intentos.length && !v; i++) {
+        const u = intentos[i], et = "ABC"[i];
         try {
-          const r = await kino.fetch(u, { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": WEB + "/" } });
+          const r = await kino.fetch(u, { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": embed.split("#")[0] } });
           const tx = r.text();
-          info += "; " + (u === embed ? "A" : "B") + " http" + r.status + " len" + tx.length + " " + pistas(tx);
+          info += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx) + " «" + tx.slice(0, 40).replace(/\s+/g, " ") + "»";
           v = buscarVideo(tx);
-          if (v) break;
         } catch (e) {
-          info += "; " + (u === embed ? "A" : "B") + " error:" + String((e && e.message) || e).slice(0, 60);
+          info += "; " + et + " error:" + String((e && e.message) || e).slice(0, 60);
         }
       }
     }
   }
   if (!v) throw kino.error("not_found", "No se encontró el video [" + info + "]");
-  const salida = { url: v.url, headers: { Referer: "https://ok.ru/", "User-Agent": UA_PC } };
+  let ori = "https://ok.ru/"; try { if (embed) ori = new URL(embed).origin + "/"; } catch (e) {}
+  const salida = { url: v.url, headers: { Referer: ori, "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
   return salida;
 }
