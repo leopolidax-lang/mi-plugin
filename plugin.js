@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.1)
+//  Plugin LACartoons para Zynora  (v1.1.2)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe de ok.ru)
 // ============================================================
@@ -121,17 +121,22 @@ export async function episodes(ref) {
 }
 
 // ---------- reproductor de ok.ru ----------
+const UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 function limpiar(t) {
-  return String(t).replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\\+u0026/gi, "&").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
+  return String(t).replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&#x2F;/gi, "/")
+    .replace(/\\+u0026/gi, "&").replace(/\\+u003d/gi, "=").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
 }
 function buscarVideo(html) {
   const t = limpiar(html);
   let m = t.match(/"(?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)":"(https:\/\/[^"]+)"/);
   if (m) return { url: m[1], mime: "application/x-mpegURL" };
+  m = t.match(/"ondemandDash":"(https:\/\/[^"]+)"/);
+  if (m) return { url: m[1], mime: "application/dash+xml" };
   const orden = ["full", "hd", "sd", "low", "lowest", "mobile"], hallados = {};
-  const re = /"name":"([a-z]+)","url":"(https:\/\/[^"]+)"/g;
+  const re = /"name":"([a-z0-9]+)"[^{}]*?"url":"(https:\/\/[^"]+)"/g;
   while ((m = re.exec(t))) hallados[m[1]] = m[2];
-  for (const n of orden) if (hallados[n]) return { url: hallados[n], mime: "" };
+  for (const n of orden) if (hallados[n]) return { url: hallados[n], mime: "video/mp4" };
   m = t.match(/https?:\/\/[^\s"'\\<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'\\<>]*)?/i);
   return m ? { url: m[0], mime: /\.m3u8/i.test(m[0]) ? "application/x-mpegURL" : "" } : null;
 }
@@ -143,21 +148,38 @@ function embedDe(html) {
   const m = String(html).match(/https?:\/\/(?:www\.)?ok\.ru\/videoembed\/\d+/i);
   return m ? m[0] : "";
 }
+function pistas(t) {
+  const s = String(t);
+  return "hls:" + (/hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl/.test(s) ? 1 : 0) + " vid:" + (/"videos"|&quot;videos/.test(s) ? 1 : 0) + " opt:" + (/data-options/.test(s) ? 1 : 0);
+}
 
 export async function resolve(ref) {
-  if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "diagnóstico", { userMessage: "LACartoons: " + String(ref).slice(5) });
+  if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "LACartoons: " + String(ref).slice(5));
   const pagina = await pedir(ref, WEB + "/");
-  if (!pagina.ok) throw kino.error("not_found", "HTTP " + pagina.status, { userMessage: "LACartoons respondió HTTP " + pagina.status + " al abrir el episodio." });
+  if (!pagina.ok) throw kino.error("not_found", "LACartoons respondió HTTP " + pagina.status + " al abrir el episodio");
   const html = pagina.text();
-  let v = buscarVideo(html), embed = "";
+  let v = buscarVideo(html), embed = "", info = "pag " + html.length;
   if (!v) {
     embed = embedDe(html);
+    info += "; embed " + (embed ? embed.replace("https://", "").slice(0, 45) : "NO");
     if (embed) {
-      try { const r = await pedir(embed, WEB + "/"); v = buscarVideo(r.text()); } catch (e) {}
+      // se prueban dos variantes del reproductor, con cabeceras de navegador de PC
+      const intentos = [embed, embed.replace("/videoembed/", "/video/")];
+      for (const u of intentos) {
+        try {
+          const r = await kino.fetch(u, { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": WEB + "/" } });
+          const tx = r.text();
+          info += "; " + (u === embed ? "A" : "B") + " http" + r.status + " len" + tx.length + " " + pistas(tx);
+          v = buscarVideo(tx);
+          if (v) break;
+        } catch (e) {
+          info += "; " + (u === embed ? "A" : "B") + " error:" + String((e && e.message) || e).slice(0, 60);
+        }
+      }
     }
   }
-  if (!v) throw kino.error("not_found", "No se encontró el video", { userMessage: embed ? "Se encontró el reproductor (" + embed.slice(8, 40) + ") pero no su video." : "No se encontró reproductor en la página del episodio." });
-  const salida = { url: v.url, headers: { Referer: "https://ok.ru/" } };
+  if (!v) throw kino.error("not_found", "No se encontró el video [" + info + "]");
+  const salida = { url: v.url, headers: { Referer: "https://ok.ru/", "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
   return salida;
 }
