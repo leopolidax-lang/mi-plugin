@@ -1,15 +1,16 @@
 // ============================================================
-//  Plugin LACartoons para Zynora
-//  Estructura del sitio:
-//    /serie/NUMERO                  -> ficha de la serie con la lista de episodios
-//    /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (trae un iframe de ok.ru)
+//  Plugin LACartoons para Zynora  (v1.1.1)
+//  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
+//  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe de ok.ru)
 // ============================================================
 const WEB = "https://www.lacartoons.com";
+const UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
 const CANALES = "Nickelodeon|Cartoon Network|Fox Kids|Hanna Barbera|Disney|Warner Channel|Marvel|Otros";
-// Texto de cada tarjeta: "Título Canal Año Valoración"
 const RE_TARJETA = new RegExp("^(.*?)\\s*(?:(" + CANALES + ")\\s+)?(\\d{4})\\s+(\\d{1,2})$");
+const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "the", "of", "and", "a", "to", "serie", "animada"];
 
-let CATALOGO = null; // se llena solo si el buscador del sitio no responde
+let CATALOGO = null;
+let ULTIMO_ERROR = "";
 
 function abs(u) {
   if (!u) return "";
@@ -20,9 +21,16 @@ function abs(u) {
 function norm(s) {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
+function palabras(s) { return norm(s).split(" ").filter(function (w) { return w && VACIAS.indexOf(w) < 0; }); }
 function primero(html, css) { const r = kino.html.select(html, css); return r.length ? r[0] : null; }
 
-// Lee las tarjetas de series de una página (inicio, búsqueda o paginación)
+// fetch con User-Agent de navegador (algunos sitios bloquean el agente por defecto)
+function pedir(url, referer) {
+  const h = { "User-Agent": UA, "Accept-Language": "es-419,es;q=0.9", "Accept": "text/html,application/xhtml+xml,*/*" };
+  if (referer) h.Referer = referer;
+  return kino.fetch(url, { headers: h });
+}
+
 function leerTarjetas(html) {
   const out = [], vistos = {};
   for (const a of kino.html.select(html, 'a[href*="/serie/"]')) {
@@ -32,65 +40,73 @@ function leerTarjetas(html) {
     if (!t) continue;
     vistos[m[1]] = 1;
     const mm = t.match(RE_TARJETA);
-    const im = primero(a.html, "img");
-    const poster = im ? abs(im.attrs["data-src"] || im.attrs.src) : "";
-    out.push({
-      id: "lc-" + m[1],
-      ref: abs("/serie/" + m[1]),
-      title: ((mm ? mm[1] : t).trim() || t).slice(0, 150),
-      kind: "series",
-      year: mm ? mm[3] : "",
-      poster: poster.indexOf("https://") === 0 ? poster : ""
-    });
+    out.push({ n: m[1], title: ((mm ? mm[1] : t).trim() || t).slice(0, 150), year: mm ? mm[3] : "" });
   }
   return out;
 }
 
-function coincide(titulo, consulta) {
-  const t = norm(titulo), palabras = norm(consulta).split(" ").filter(Boolean);
-  return palabras.length > 0 && palabras.every(function (p) { return t.indexOf(p) >= 0; });
-}
-
 async function cargarCatalogo() {
   if (CATALOGO) return CATALOGO;
-  const r1 = await kino.fetch(WEB + "/");
-  if (!r1.ok) return [];
+  // 1) copia guardada (válida 7 días)
+  try {
+    const g = kino.storage.get("cat");
+    if (g) {
+      const o = JSON.parse(g);
+      if (o && Date.now() - o.t < 7 * 86400000 && o.l && o.l.length > 20) { CATALOGO = o.l; return CATALOGO; }
+    }
+  } catch (e) {}
+  // 2) descargar todas las páginas del inicio
+  const r1 = await pedir(WEB + "/");
+  if (!r1.ok) { ULTIMO_ERROR = "HTTP " + r1.status; return []; }
   const h1 = r1.text();
   let max = 1;
   (h1.match(/page=(\d+)/g) || []).forEach(function (x) { max = Math.max(max, Number(x.slice(5)) || 1); });
-  max = Math.min(max, 60);
-  const todas = [leerTarjetas(h1)];
+  max = Math.min(max, 55);
   const paginas = [];
   for (let p = 2; p <= max; p++) paginas.push(p);
   const resto = await Promise.all(paginas.map(async function (p) {
-    try {
-      const r = await kino.fetch(WEB + "/?page=" + p);
-      return r.ok ? leerTarjetas(r.text()) : [];
-    } catch (e) { return []; }
+    try { const r = await pedir(WEB + "/?page=" + p); return r.ok ? leerTarjetas(r.text()) : []; } catch (e) { return []; }
   }));
   const visto = {};
-  CATALOGO = todas.concat(resto).flat().filter(function (x) { if (visto[x.id]) return false; visto[x.id] = 1; return true; });
+  const lista = leerTarjetas(h1).concat(resto.flat()).filter(function (x) { if (visto[x.n]) return false; visto[x.n] = 1; return true; });
+  if (!lista.length) { ULTIMO_ERROR = "sin tarjetas en la página"; return []; }
+  CATALOGO = lista;
+  try { kino.storage.set("cat", JSON.stringify({ t: Date.now(), l: lista.map(function (x) { return { n: x.n, title: x.title, year: x.year }; }) })); } catch (e) {}
   return CATALOGO;
 }
 
+// Puntaje de coincidencia entre una consulta y un título (0 a 1)
+function puntaje(titulo, consulta) {
+  const q = palabras(consulta), t = palabras(titulo);
+  if (!q.length || !t.length) return 0;
+  let ok = 0;
+  q.forEach(function (w) { if (t.some(function (x) { return x === w || (w.length > 3 && (x.indexOf(w) === 0 || w.indexOf(x) === 0 && x.length > 3)); })) ok++; });
+  return ok / q.length;
+}
+
 export async function search(q) {
-  const consulta = q.q;
-  let items = [];
-  try {
-    const r = await kino.fetch(WEB + "/?Titulo=" + encodeURIComponent(consulta));
-    if (r.ok) items = leerTarjetas(r.text()).filter(function (x) { return coincide(x.title, consulta); });
-  } catch (e) {}
-  if (!items.length) {
-    try {
-      items = (await cargarCatalogo()).filter(function (x) { return coincide(x.title, consulta); });
-    } catch (e) {}
-  }
-  return items.slice(0, 20);
+  ULTIMO_ERROR = "";
+  const consultas = [q.q, q.originalTitle].concat(q.altTitles || []).filter(function (x) { return x && String(x).trim(); });
+  const cat = await cargarCatalogo();
+  const res = [];
+  cat.forEach(function (x) {
+    let best = 0;
+    consultas.forEach(function (c) { best = Math.max(best, puntaje(x.title, c)); });
+    if (best >= 0.6) res.push({ x: x, s: best });
+  });
+  res.sort(function (a, b) { return b.s - a.s; });
+  const items = res.slice(0, 15).map(function (r) {
+    return { id: "lc-" + r.x.n, ref: abs("/serie/" + r.x.n), title: r.x.title, kind: "series", year: r.x.year, poster: "" };
+  });
+  if (items.length) return items;
+  // Sin resultados: se muestra una línea de diagnóstico para saber qué pasó
+  const motivo = ULTIMO_ERROR || (cat.length + " series revisadas, ninguna coincide con «" + q.q + "»");
+  return [{ id: "lc-diag", ref: "diag:" + motivo.slice(0, 200), title: "[Diagnóstico] " + motivo, kind: "movie" }];
 }
 
 export async function episodes(ref) {
-  const r = await kino.fetch(ref);
-  if (!r.ok) throw kino.error("not_found", "No se pudo abrir la serie", { userMessage: "No se pudo abrir la serie en LACartoons." });
+  const r = await pedir(ref, WEB + "/");
+  if (!r.ok) throw kino.error("not_found", "HTTP " + r.status, { userMessage: "No se pudo abrir la serie en LACartoons (HTTP " + r.status + ")." });
   const eps = [], vistos = {};
   for (const a of kino.html.select(r.text(), 'a[href*="/serie/capitulo/"]')) {
     const url = abs(a.attrs.href);
@@ -104,11 +120,9 @@ export async function episodes(ref) {
   return { episodes: eps };
 }
 
-// ---------- lectura del reproductor de ok.ru ----------
+// ---------- reproductor de ok.ru ----------
 function limpiar(t) {
-  return String(t)
-    .replace(/&quot;/g, '"').replace(/&amp;/g, "&")
-    .replace(/\\+u0026/gi, "&").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
+  return String(t).replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\\+u0026/gi, "&").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
 }
 function buscarVideo(html) {
   const t = limpiar(html);
@@ -131,19 +145,18 @@ function embedDe(html) {
 }
 
 export async function resolve(ref) {
-  const pagina = await kino.fetch(ref);
+  if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "diagnóstico", { userMessage: "LACartoons: " + String(ref).slice(5) });
+  const pagina = await pedir(ref, WEB + "/");
+  if (!pagina.ok) throw kino.error("not_found", "HTTP " + pagina.status, { userMessage: "LACartoons respondió HTTP " + pagina.status + " al abrir el episodio." });
   const html = pagina.text();
-  let v = buscarVideo(html);
+  let v = buscarVideo(html), embed = "";
   if (!v) {
-    const embed = embedDe(html);
+    embed = embedDe(html);
     if (embed) {
-      try {
-        const r = await kino.fetch(embed, { headers: { Referer: WEB + "/" } });
-        v = buscarVideo(r.text());
-      } catch (e) {}
+      try { const r = await pedir(embed, WEB + "/"); v = buscarVideo(r.text()); } catch (e) {}
     }
   }
-  if (!v) throw kino.error("not_found", "No se encontró el video", { userMessage: "No se encontró el video de este episodio. Prueba otra fuente." });
+  if (!v) throw kino.error("not_found", "No se encontró el video", { userMessage: embed ? "Se encontró el reproductor (" + embed.slice(8, 40) + ") pero no su video." : "No se encontró reproductor en la página del episodio." });
   const salida = { url: v.url, headers: { Referer: "https://ok.ru/" } };
   if (v.mime) salida.mime = v.mime;
   return salida;
