@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.9)
+//  Plugin LACartoons para Zynora  (v1.1.10)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -210,6 +210,10 @@ function sacarDeTexto(txt, og, info, etiqueta) {
       });
     };
     recorrer(obj, "", 0);
+    // Los enlaces con IP numérica no se pueden declarar en "hosts": se apartan y se anotan
+    const conIp = cands.filter(function (c) { return /^(https?:)?\/\/\d{1,3}(\.\d{1,3}){3}/.test(c.v); });
+    conIp.forEach(function (c) { info.t += "; ip " + c.k + "=" + c.v.replace(/^https?:\/\//, "").slice(0, 70); });
+    for (let ci = cands.length - 1; ci >= 0; ci--) { if (conIp.indexOf(cands[ci]) >= 0) cands.splice(ci, 1); }
     cands.forEach(function (c) {
       let abs2 = c.v;
       if (abs2[0] === "/" && abs2.indexOf("//") !== 0) abs2 = og + abs2;
