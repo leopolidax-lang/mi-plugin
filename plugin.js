@@ -178,16 +178,18 @@ export async function resolve(ref) {
     if (embed) {
       const intentos = [];
       
-      // --- CORRECCIÓN PARA CUBEEMBED (rpmvid) ---
+      // --- EXTRACCIÓN AVANZADA PARA CUBEEMBED (rpmvid) ---
       if (embed.includes("rpmvid.com")) {
-        // Corregido el error de doble protocolo https://://
-        intentos.push(embed); 
-        const matchId = embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
+        // Extraemos el ID que viene después del '#' o de la barra '/'
+        const matchId = embed.match(/(?:#|\/)([A-Za-z0-9_-]+)$/) || embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
         if (matchId) {
           const videoId = matchId[1];
+          // Añadimos las llamadas directas que suele usar su reproductor interno para pedir el stream
+          intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
         }
+        intentos.push(embed); 
       } else {
         // --- VARIANTES PARA OK.RU ---
         intentos.push(embed);
@@ -199,22 +201,30 @@ export async function resolve(ref) {
       for (let i = 0; i < intentos.length && !v; i++) {
         const u = intentos[i], et = "ABCDE"[i] || "X";
         try {
-          // El Referer para los servidores siempre debe ser el propio iframe o su dominio base, no lacartoons
-          let customReferer = u;
-          if (u.includes("rpmvid.com")) {
-            customReferer = "https://rpmvid.com";
-          }
-
-          const r = await kino.fetch(u, { 
+          // Si estamos pegándole a una API interna de CubeEmbed, a veces pide método POST o cabeceras X-Requested-With
+          const esApi = u.includes("/api/source/");
+          const opcionesFetch = {
+            method: esApi ? "POST" : "GET",
             headers: { 
               "User-Agent": UA_PC, 
               "Accept-Language": "es-419,es;q=0.9", 
-              "Referer": customReferer
-            } 
-          });
+              "Referer": "https://rpmvid.com",
+              "Origin": "https://rpmvid.com"
+            }
+          };
+
+          const r = await kino.fetch(u, opcionesFetch);
           const tx = r.text();
           info += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx);
+          
+          // Intentamos buscar la URL del video en la respuesta (sea HTML o JSON plano)
           v = buscarVideo(tx);
+          
+          // Si es un JSON de API que devolvió urls en un formato estructurado tipo {"data":[{"file":"url"}]}
+          if (!v && esApi && tx.includes('"file"')) {
+            const mFile = tx.match(/"file"\s*:\s*"(https?:\/\/[^"]+)"/);
+            if (mFile) v = { url: mFile[1].replace(/\\/g, ""), mime: mFile[1].includes(".m3u8") ? "application/x-mpegURL" : "video/mp4" };
+          }
         } catch (e) {
           info += "; " + et + " error:" + String((e && e.message) || e).slice(0, 60);
         }
@@ -229,7 +239,6 @@ export async function resolve(ref) {
     if (embed) ori = new URL(embed).origin + "/"; 
   } catch (e) {}
   
-  // Enviamos las cabeceras necesarias para que Zynora pueda reproducir el flujo final
   const salida = { url: v.url, headers: { Referer: ori, "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
   return salida;
