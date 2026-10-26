@@ -180,15 +180,24 @@ export async function resolve(ref) {
       
       // --- EXTRACCIÓN AVANZADA PARA CUBEEMBED (rpmvid) ---
       if (embed.includes("rpmvid.com")) {
-        // Extraemos el ID que viene después del '#' o de la barra '/'
-        const matchId = embed.match(/(?:#|\/)([A-Za-z0-9_-]+)$/) || embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
-        if (matchId) {
-          const videoId = matchId[1];
-          // Añadimos las llamadas directas que suele usar su reproductor interno para pedir el stream
+        let videoId = "";
+        
+        // Extraemos el ID dividiendo la URL por el símbolo '#' o '/'
+        if (embed.includes("#")) {
+          videoId = embed.split("#")[1];
+        } else {
+          const matchId = embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
+          if (matchId) videoId = matchId[1];
+        }
+        
+        // Si logramos capturar el ID, forzamos los endpoints alternativos de su API
+        if (videoId) {
           intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
         }
+        
+        // Dejamos la URL original al final por si acaso
         intentos.push(embed); 
       } else {
         // --- VARIANTES PARA OK.RU ---
@@ -201,7 +210,6 @@ export async function resolve(ref) {
       for (let i = 0; i < intentos.length && !v; i++) {
         const u = intentos[i], et = "ABCDE"[i] || "X";
         try {
-          // Si estamos pegándole a una API interna de CubeEmbed, a veces pide método POST o cabeceras X-Requested-With
           const esApi = u.includes("/api/source/");
           const opcionesFetch = {
             method: esApi ? "POST" : "GET",
@@ -217,13 +225,16 @@ export async function resolve(ref) {
           const tx = r.text();
           info += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx);
           
-          // Intentamos buscar la URL del video en la respuesta (sea HTML o JSON plano)
+          // Intentamos buscar la URL del video en la respuesta
           v = buscarVideo(tx);
           
-          // Si es un JSON de API que devolvió urls en un formato estructurado tipo {"data":[{"file":"url"}]}
+          // Si es un JSON estructurado de la API tipo {"data":[{"file":"url"}]}
           if (!v && esApi && tx.includes('"file"')) {
             const mFile = tx.match(/"file"\s*:\s*"(https?:\/\/[^"]+)"/);
-            if (mFile) v = { url: mFile[1].replace(/\\/g, ""), mime: mFile[1].includes(".m3u8") ? "application/x-mpegURL" : "video/mp4" };
+            if (mFile) {
+              const urlLimpia = mFile[1].replace(/\\/g, "");
+              v = { url: urlLimpia, mime: urlLimpia.includes(".m3u8") ? "application/x-mpegURL" : "video/mp4" };
+            }
           }
         } catch (e) {
           info += "; " + et + " error:" + String((e && e.message) || e).slice(0, 60);
