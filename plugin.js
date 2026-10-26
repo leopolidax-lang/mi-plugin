@@ -182,17 +182,21 @@ export async function resolve(ref) {
       if (embed.includes("rpmvid.com")) {
         let videoId = "";
         
-        // Extraemos el ID dividiendo la URL por el símbolo '#' o buscando el parámetro
+        // Extraemos el ID tomando estrictamente la parte derecha del símbolo '#'
         if (embed.includes("#")) {
-          // Aseguramos capturar estrictamente el texto después del símbolo '#'
-          videoId = String(embed.split("#")[1] || "").trim();
+          const partes = embed.split("#");
+          if (partes.length > 1) {
+            videoId = String(partes[1]).trim();
+          }
         } else {
           const matchId = embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
-          if (matchId) videoId = String(matchId[1]);
+          if (matchId) {
+            videoId = String(matchId[1]);
+          }
         }
         
-        // Si logramos capturar el ID, forzamos los endpoints alternativos de su API con las barras diagonales correctas
-        if (videoId) {
+        // Si logramos capturar el ID limpio, disparamos las rutas de la API
+        if (videoId && videoId.length > 2) {
           intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
