@@ -184,10 +184,11 @@ export async function resolve(ref) {
         
         // Extraemos el ID dividiendo la URL por el símbolo '#' o buscando el parámetro
         if (embed.includes("#")) {
-          videoId = embed.split("#")[1];
+          // Aseguramos capturar estrictamente el texto después del símbolo '#'
+          videoId = String(embed.split("#")[1] || "").trim();
         } else {
           const matchId = embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
-          if (matchId) videoId = matchId[1];
+          if (matchId) videoId = String(matchId[1]);
         }
         
         // Si logramos capturar el ID, forzamos los endpoints alternativos de su API con las barras diagonales correctas
