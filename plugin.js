@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.8)
+//  Plugin LACartoons para Zynora  (v1.1.9)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -210,8 +210,14 @@ function sacarDeTexto(txt, og, info, etiqueta) {
       });
     };
     recorrer(obj, "", 0);
+    cands.forEach(function (c) {
+      let abs2 = c.v;
+      if (abs2[0] === "/" && abs2.indexOf("//") !== 0) abs2 = og + abs2;
+      if (/rpmvid\.com|ok\.ru/i.test(abs2)) c.p += 10;
+    });
     cands.sort(function (x, y) { return y.p - x.p; });
     if (cands.length) {
+      info.t += "; cand:" + cands.slice(0, 3).map(function (c) { return c.k + "@" + c.v.replace(/^https?:\/\//, "").slice(0, 30); }).join(",");
       let u = cands[0].v;
       if (u.indexOf("//") === 0) u = "https:" + u;
       else if (u[0] === "/") u = og + u;
@@ -275,8 +281,8 @@ async function resolverRpm(embed, info) {
 
   // 2) video: aquí debería venir la dirección del stream
   const rutas = [
-    og + "/api/v1/video?id=" + eid + "&w=1920&h=1080&r=" + referer,
-    og + "/api/v1/video?id=" + eid + "&w=1280&h=720&r="
+    og + "/api/v1/video?id=" + eid + "&w=1366&h=768&r=lacartoons.com",
+    og + "/api/v1/video?id=" + eid + "&w=1920&h=1080&r=" + referer
   ];
   for (let i = 0; i < rutas.length && !v; i++) {
     try {
