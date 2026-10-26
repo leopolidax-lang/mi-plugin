@@ -177,7 +177,17 @@ export async function resolve(ref) {
     if (embed) {
       const intentos = [];
       
-      // Si es un enlace cifrado de OK.RU con hashes API
+      // --- CORRECCIÓN PARA CUBEEMBED (rpmvid) ---
+      if (embed.includes("://rpmvid.com")) {
+        const matchId = embed.match(/(?:#|\.com\/)([A-Za-z0-9_-]+)/);
+        if (matchId) {
+          const videoId = matchId[1];
+          intentos.push("https://://rpmvid.com/" + videoId);
+          intentos.push("https://://rpmvid.com/?id=" + videoId);
+        }
+      }
+      
+      // --- VARIANTES PARA OK.RU ---
       const hm = embed.match(/^(https:\/\/[^\/#?]+)\/?#([A-Za-z0-9_-]+)/);
       if (hm && embed.includes("ok.ru")) {
         intentos.push(hm[1] + "/api/v1/video?id=" + hm[2] + "&w=1280&h=720&r=" + encodeURIComponent(WEB + "/"));
@@ -190,9 +200,8 @@ export async function resolve(ref) {
       }
 
       for (let i = 0; i < intentos.length && !v; i++) {
-        const u = intentos[i], et = "ABC"[i];
+        const u = intentos[i], et = "ABCDE"[i] || "X";
         try {
-          // El Referer simula que el reproductor se abre dentro de sí mismo o desde LACartoons
           const r = await kino.fetch(u, { 
             headers: { 
               "User-Agent": UA_PC, 
