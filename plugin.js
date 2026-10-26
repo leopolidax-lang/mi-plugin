@@ -182,7 +182,7 @@ export async function resolve(ref) {
       if (embed.includes("rpmvid.com")) {
         let videoId = "";
         
-        // Extraemos el ID dividiendo la URL por el símbolo '#' o '/'
+        // Extraemos el ID dividiendo la URL por el símbolo '#' o buscando el parámetro
         if (embed.includes("#")) {
           videoId = embed.split("#")[1];
         } else {
@@ -190,7 +190,7 @@ export async function resolve(ref) {
           if (matchId) videoId = matchId[1];
         }
         
-        // Si logramos capturar el ID, forzamos los endpoints alternativos de su API
+        // Si logramos capturar el ID, forzamos los endpoints alternativos de su API con las barras diagonales correctas
         if (videoId) {
           intentos.push("https://rpmvid.com" + videoId);
           intentos.push("https://rpmvid.com" + videoId);
