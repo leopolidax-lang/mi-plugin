@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.4)
+//  Plugin LACartoons para Zynora  (v1.1.6)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -9,6 +9,11 @@ const UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 const CANALES = "Nickelodeon|Cartoon Network|Fox Kids|Hanna Barbera|Disney|Warner Channel|Marvel|Otros";
 const RE_TARJETA = new RegExp("^(.*?)\\s*(?:(" + CANALES + ")\\s+)?(\\d{4})\\s+(\\d{1,2})$");
 const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "the", "of", "and", "a", "to", "serie", "animada"];
+
+// Clave y vector del reproductor rpmvid/cubeembed (SIN VERIFICAR: si falla,
+// el mensaje de error lo dirá en "dec ...").
+const RPM_KEY = "kiemtienmua911ca";
+const RPM_IV = "1234567890oiuytr";
 
 let CATALOGO = null;
 let ULTIMO_ERROR = "";
@@ -122,21 +127,21 @@ function limpiar(t) {
     .replace(/\\+u0026/gi, "&").replace(/\\+u003d/gi, "=").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
 }
 
-// Extractor unificado corregido
+// Extractor unificado
 function buscarVideo(html) {
   const t = limpiar(html);
-  
-  // 1. Detección genérica de manifiestos HLS/Dash (Ideal para ok.ru y cubeembed plano)
+
+  // 1. Manifiestos HLS/Dash declarados en JSON (ok.ru y otros)
   let m = t.match(/"(?:hlsManifestUrl|ondemandHls|hlsMasterPlaylistUrl)":"(https:\/\/[^"]+)"/);
   if (m) return { url: m[1], mime: "application/x-mpegURL" };
   m = t.match(/"ondemandDash":"(https:\/\/[^"]+)"/);
   if (m) return { url: m[1], mime: "application/dash+xml" };
 
-  // 2. Detección directa de URLs con extensión .m3u8 en texto plano (Patrón CubeEmbed)
+  // 2. URL .m3u8 en texto plano
   m = t.match(/(https?:\/\/[^\s"'\\<>]+?\.m3u8(?:\?[^\s"'\\<>]*)?)/i);
   if (m) return { url: m[0], mime: "application/x-mpegURL" };
 
-  // 3. Raspado de MP4s por calidades (ok.ru heredado)
+  // 3. MP4 por calidades (ok.ru)
   const orden = ["full", "hd", "sd", "low", "lowest", "mobile"], hallados = {};
   let mm;
   const re = /"name":"([a-z0-9]+)"[^{}]*?"url":"(https:\/\/[^"]+)"/g;
@@ -148,13 +153,18 @@ function buscarVideo(html) {
 }
 
 function embedDe(html) {
+  // Primero, un iframe que sea un reproductor conocido (evita anuncios)
+  const conocidos = /ok\.ru\/videoembed|rpmvid\.com/i;
+  let primero = "";
   for (const f of kino.html.select(html, "iframe")) {
     const u = abs(f.attrs["data-src"] || f.attrs.src);
-    if (u.indexOf("https://") === 0) return u;
+    if (u.indexOf("https://") !== 0) continue;
+    if (conocidos.test(u)) return u;
+    if (!primero) primero = u;
   }
-  // Expresión regular ajustada para capturar el embed completo
-  const m = String(html).match(/https?:\/\/(?:www\.)?(?:ok\.ru\/videoembed|cubeembed\.rpmvid\.com\/embed)[^\s"'<>]+/i);
-  return m ? m[0] : "";
+  const m = String(html).match(/https?:\/\/(?:www\.)?(?:ok\.ru\/videoembed|cubeembed\.rpmvid\.com)[^\s"'<>]+/i);
+  if (m) return m[0];
+  return primero;
 }
 
 function pistas(t) {
@@ -162,99 +172,126 @@ function pistas(t) {
   return "hls:" + (/hls|\.m3u8/.test(s) ? 1 : 0) + " vid:" + (/"videos"|&quot;videos/.test(s) ? 1 : 0);
 }
 
+// ---------- Descifrado del reproductor rpmvid / cubeembed ----------
+function hexABytes(h) {
+  const a = new Uint8Array(h.length / 2);
+  for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16);
+  return a;
+}
+async function descifrarRpm(hex) {
+  const c = globalThis.crypto && globalThis.crypto.subtle;
+  if (!c) throw new Error("este entorno no tiene crypto.subtle");
+  const enc = new TextEncoder();
+  const key = await c.importKey("raw", enc.encode(RPM_KEY), { name: "AES-CBC" }, false, ["decrypt"]);
+  const buf = await c.decrypt({ name: "AES-CBC", iv: enc.encode(RPM_IV) }, key, hexABytes(hex));
+  return new TextDecoder().decode(buf);
+}
+
+// Devuelve {url, mime} o null. Va anotando el diagnóstico en info.t
+async function resolverRpm(embed, info) {
+  let id = "";
+  if (embed.indexOf("#") >= 0) id = embed.split("#")[1];
+  else {
+    const mid = embed.match(/(?:[?&]id=|embed\/)([A-Za-z0-9_-]+)/);
+    if (mid) id = mid[1];
+  }
+  id = String(id || "").trim();
+  if (!id) { info.t += "; rpm sin id"; return null; }
+
+  const og = new URL(embed).origin;
+  const r = await kino.fetch(og + "/api/v1/info?id=" + encodeURIComponent(id), {
+    headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og }
+  });
+  const crudo = r.text().trim();
+  info.t += "; info http" + r.status + " len" + crudo.length;
+
+  let txt = crudo;
+  if (/^[0-9a-f]+$/i.test(crudo) && crudo.length % 32 === 0) {
+    try {
+      txt = await descifrarRpm(crudo);
+      info.t += "; dec ok «" + txt.slice(0, 120).replace(/[\r\n]+/g, " ") + "»";
+    } catch (e) {
+      info.t += "; dec fallo:" + String((e && e.message) || e).slice(0, 80);
+      return null;
+    }
+  } else {
+    info.t += "; respuesta no es hex";
+  }
+
+  let v = buscarVideo(txt);
+  if (v) return v;
+
+  // Ruta relativa o campo conocido dentro del JSON descifrado
+  const limpio = limpiar(txt);
+  let m = limpio.match(/"(?:source|file|hls|cf|url|src)"\s*:\s*"([^"]+\.m3u8[^"]*)"/i) || limpio.match(/"([^"]*\.m3u8[^"]*)"/i);
+  if (m) {
+    let u = m[1];
+    if (u.indexOf("//") === 0) u = "https:" + u;
+    else if (u[0] === "/") u = og + u;
+    return { url: u, mime: "application/x-mpegURL" };
+  }
+  m = limpio.match(/"(?:source|file|hls|cf)"\s*:\s*"([^"]+)"/i);
+  if (m) {
+    let u = m[1];
+    if (u.indexOf("//") === 0) u = "https:" + u;
+    else if (u[0] === "/") u = og + u;
+    return { url: u, mime: /\.mp4/i.test(u) ? "video/mp4" : "application/x-mpegURL" };
+  }
+  info.t += "; sin campo de video";
+  return null;
+}
+
 export async function resolve(ref) {
   if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "LACartoons: " + String(ref).slice(5));
-  
+
   const pagina = await pedir(ref, WEB + "/");
   if (!pagina.ok) throw kino.error("not_found", "LACartoons respondió HTTP " + pagina.status);
-  
+
   const html = pagina.text();
-  let v = buscarVideo(html), embed = "", info = "pag " + html.length;
-  
+  const info = { t: "pag " + html.length };
+  let v = buscarVideo(html), embed = "";
+
   if (!v) {
     embed = embedDe(html);
-    info += "; embed " + (embed ? embed.replace("https://", "").slice(0, 45) : "NO");
-    
-    if (embed) {
-      const intentos = [];
-      
-      // --- EXTRACCIÓN AVANZADA PARA CUBEEMBED (rpmvid) ---
-      if (embed.includes("rpmvid.com")) {
-        let videoId = "";
-        
-        // Extraemos el ID tomando estrictamente la parte derecha del símbolo '#'
-        if (embed.includes("#")) {
-          const partes = embed.split("#");
-          if (partes.length > 1) {
-            videoId = String(partes[1]).trim();
-          }
-        } else {
-          const matchId = embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
-          if (matchId) {
-            videoId = String(matchId[1]);
-          }
-        }
-        
-        // Si logramos capturar el ID limpio, disparamos las rutas de la API
-        if (videoId && videoId.length > 2) {
-          intentos.push("https://rpmvid.com" + videoId);
-          intentos.push("https://rpmvid.com" + videoId);
-          intentos.push("https://rpmvid.com" + videoId);
-        }
-        
-        // Dejamos la URL original al final por si acaso
-        intentos.push(embed); 
-      } else {
-        // --- VARIANTES PARA OK.RU ---
-        intentos.push(embed);
-        if (embed.indexOf("/videoembed/") >= 0) {
-          intentos.push(embed.replace("/videoembed/", "/video/"));
-        }
+    info.t += "; embed " + (embed ? embed.replace("https://", "").slice(0, 45) : "NO");
+
+    if (embed && embed.indexOf("rpmvid.com") >= 0) {
+      // --- cubeembed / rpmvid ---
+      try {
+        v = await resolverRpm(embed, info);
+      } catch (e) {
+        info.t += "; rpm error:" + String((e && e.message) || e).slice(0, 80);
       }
+    }
+
+    if (!v && embed) {
+      // --- ok.ru y cualquier otro embed: probar la página tal cual ---
+      const intentos = [embed];
+      if (embed.indexOf("/videoembed/") >= 0) intentos.push(embed.replace("/videoembed/", "/video/"));
+      let origen = "https://ok.ru/";
+      try { origen = new URL(embed).origin + "/"; } catch (e) {}
 
       for (let i = 0; i < intentos.length && !v; i++) {
         const u = intentos[i], et = "ABCDE"[i] || "X";
         try {
-          const esApi = u.includes("/api/source/");
-          const opcionesFetch = {
-            method: esApi ? "POST" : "GET",
-            headers: { 
-              "User-Agent": UA_PC, 
-              "Accept-Language": "es-419,es;q=0.9", 
-              "Referer": "https://rpmvid.com",
-              "Origin": "https://rpmvid.com"
-            }
-          };
-
-          const r = await kino.fetch(u, opcionesFetch);
+          const r = await kino.fetch(u, {
+            headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": WEB + "/", "Origin": origen.replace(/\/$/, "") }
+          });
           const tx = r.text();
-          info += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx);
-          
-          // Intentamos buscar la URL del video en la respuesta
+          info.t += "; " + et + " http" + r.status + " len" + tx.length + " " + pistas(tx);
           v = buscarVideo(tx);
-          
-          // Si es un JSON estructurado de la API tipo {"data":[{"file":"url"}]}
-          if (!v && esApi && tx.includes('"file"')) {
-            const mFile = tx.match(/"file"\s*:\s*"(https?:\/\/[^"]+)"/);
-            if (mFile) {
-              const urlLimpia = mFile[1].replace(/\\/g, "");
-              v = { url: urlLimpia, mime: urlLimpia.includes(".m3u8") ? "application/x-mpegURL" : "video/mp4" };
-            }
-          }
         } catch (e) {
-          info += "; " + et + " error:" + String((e && e.message) || e).slice(0, 60);
+          info.t += "; " + et + " error:" + String((e && e.message) || e).slice(0, 60);
         }
       }
     }
   }
-  
-  if (!v) throw kino.error("not_found", "No se encontró el video [" + info + "]");
-  
-  let ori = "https://ok.ru"; 
-  try { 
-    if (embed) ori = new URL(embed).origin + "/"; 
-  } catch (e) {}
-  
+
+  if (!v) throw kino.error("not_found", "No se encontró el video [" + info.t + "]");
+
+  let ori = "https://ok.ru/";
+  try { if (embed) ori = new URL(embed).origin + "/"; } catch (e) {}
+
   const salida = { url: v.url, headers: { Referer: ori, "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
   return salida;
