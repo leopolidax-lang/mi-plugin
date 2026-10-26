@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.15)
+//  Plugin LACartoons para Zynora  (v1.1.16)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -13,7 +13,7 @@ const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "
 // Clave y vector del reproductor rpmvid/cubeembed (SIN VERIFICAR: si falla,
 // el mensaje de error lo dirá en "dec ...").
 // MODO DIAGNÓSTICO: en true NO reproduce, solo muestra qué enlace encontró. Pon false para reproducir.
-const DEBUG = true;
+const DEBUG = false;
 
 const RPM_KEY = "kiemtienmua911ca";
 const RPM_IV = "1234567890oiuytr";
