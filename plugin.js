@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.11)
+//  Plugin LACartoons para Zynora  (v1.1.12)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -13,7 +13,7 @@ const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "
 // Clave y vector del reproductor rpmvid/cubeembed (SIN VERIFICAR: si falla,
 // el mensaje de error lo dirá en "dec ...").
 // MODO DIAGNÓSTICO: en true NO reproduce, solo muestra qué enlace encontró. Pon false para reproducir.
-const DEBUG = true;
+const DEBUG = false;
 
 const RPM_KEY = "kiemtienmua911ca";
 const RPM_IV = "1234567890oiuytr";
@@ -266,6 +266,36 @@ async function pedirRpm(url, og, info, etiqueta) {
   return crudo;
 }
 
+// El campo del JSON trae una ruta "/hls/..." pero el navegador usa "/hlsmod/<host>/...?v=...".
+// Probamos las variantes y nos quedamos con la que devuelve una lista HLS real (#EXTM3U).
+async function validarHls(v, og, texto, info) {
+  if (!v || !/m3u8/i.test(v.url)) return v;
+  const t = limpiar(texto);
+  let ver = "1766826492";
+  const mv = t.match(/"v"\s*:\s*"?(\d{8,})"?/);
+  if (mv) ver = mv[1];
+  const mh = t.match(/([a-z0-9-]+(?:\.[a-z0-9-]+)*tiktokcdn[a-z0-9.-]*\.com)/i);
+  const host = mh ? mh[1] : "p16-ad-site-sign-sg.tiktokcdn.com";
+  const sinQ = v.url.split("?")[0];
+  const ruta = sinQ.indexOf(og) === 0 ? sinQ.slice(og.length) : "";
+  const vars = [];
+  if (/^\/hls\//.test(ruta)) vars.push(og + "/hlsmod/" + host + ruta.slice(4) + "?v=" + ver);
+  vars.push(sinQ + "?v=" + ver);
+  vars.push(v.url);
+  for (let i = 0; i < vars.length; i++) {
+    try {
+      const r = await kino.fetch(vars[i], { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og } });
+      const tx = r.text();
+      const ok = /^\s*#EXTM3U/.test(tx);
+      info.t += "; H" + (i + 1) + " http" + r.status + (ok ? " HLS-OK" : " no-hls len" + tx.length);
+      if (ok) return { url: vars[i], mime: "application/x-mpegURL" };
+    } catch (e) {
+      info.t += "; H" + (i + 1) + " error:" + String((e && e.message) || e).slice(0, 40);
+    }
+  }
+  return v;
+}
+
 async function resolverRpm(embed, info) {
   let id = "";
   if (embed.indexOf("#") >= 0) id = embed.split("#")[1];
@@ -294,7 +324,7 @@ async function resolverRpm(embed, info) {
   for (let i = 0; i < rutas.length && !v; i++) {
     try {
       const t2 = await pedirRpm(rutas[i], og, info, "V" + (i + 1));
-      if (t2) v = sacarDeTexto(t2, og, info, "v" + (i + 1));
+      if (t2) { v = sacarDeTexto(t2, og, info, "v" + (i + 1)); if (v) v = await validarHls(v, og, t2, info); }
     } catch (e) {
       info.t += "; V" + (i + 1) + " error:" + String((e && e.message) || e).slice(0, 50);
     }
