@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.7)
+//  Plugin LACartoons para Zynora  (v1.1.8)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -187,38 +187,8 @@ async function descifrarRpm(hex) {
   return new TextDecoder().decode(buf);
 }
 
-// Devuelve {url, mime} o null. Va anotando el diagnóstico en info.t
-async function resolverRpm(embed, info) {
-  let id = "";
-  if (embed.indexOf("#") >= 0) id = embed.split("#")[1];
-  else {
-    const mid = embed.match(/(?:[?&]id=|embed\/)([A-Za-z0-9_-]+)/);
-    if (mid) id = mid[1];
-  }
-  id = String(id || "").trim();
-  if (!id) { info.t += "; rpm sin id"; return null; }
-
-  const og = new URL(embed).origin;
-  const r = await kino.fetch(og + "/api/v1/info?id=" + encodeURIComponent(id), {
-    headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og }
-  });
-  const crudo = r.text().trim();
-  info.t += "; info http" + r.status + " len" + crudo.length;
-
-  let txt = crudo;
-  if (/^[0-9a-f]+$/i.test(crudo) && crudo.length % 32 === 0) {
-    try {
-      txt = await descifrarRpm(crudo);
-      info.t += "; dec ok len" + txt.length;
-    } catch (e) {
-      info.t += "; dec fallo:" + String((e && e.message) || e).slice(0, 80);
-      return null;
-    }
-  } else {
-    info.t += "; respuesta no es hex";
-  }
-
-  // El campo "ads" trae basura de publicidad: lo quitamos antes de buscar
+// Busca el video dentro de un texto (JSON descifrado o plano). Devuelve {url,mime} o null
+function sacarDeTexto(txt, og, info, etiqueta) {
   let obj = null;
   try { obj = JSON.parse(txt); } catch (e) {}
   if (obj && typeof obj === "object") {
@@ -235,7 +205,7 @@ async function resolverRpm(embed, info) {
           if (/hlsmod/i.test(val2)) pts += 4;
           if (/^(https?:)?\/\//i.test(val2) || val2[0] === "/") pts += 1;
           if (/hls|source|file|^cf$|stream|video|src|url/i.test(k)) pts += 2;
-          if (pts >= 3 && val2.length < 600 && /^(https?:)?\/|^[\w.-]+\//.test(val2)) cands.push({ k: ruta + k, v: val2, p: pts });
+          if (pts >= 3 && val2.length < 800 && /^(https?:)?\/|^[\w.-]+\//.test(val2)) cands.push({ k: ruta + k, v: val2, p: pts });
         } else if (val && typeof val === "object") recorrer(val, ruta + k + ".", prof + 1);
       });
     };
@@ -246,23 +216,77 @@ async function resolverRpm(embed, info) {
       if (u.indexOf("//") === 0) u = "https:" + u;
       else if (u[0] === "/") u = og + u;
       else if (!/^https?:/i.test(u)) u = og + "/" + u;
-      info.t += "; usé campo " + cands[0].k;
+      info.t += "; " + etiqueta + " usé campo " + cands[0].k;
       return { url: u, mime: /\.mp4/i.test(u) ? "video/mp4" : "application/x-mpegURL" };
     }
-    // Diagnóstico: claves y primeros caracteres de cada valor
-    const resumen = Object.keys(obj).slice(0, 14).map(function (k) {
+    const resumen = Object.keys(obj).slice(0, 16).map(function (k) {
       const val = obj[k];
       const sv = typeof val === "string" ? val : JSON.stringify(val);
-      return k + "=" + String(sv).replace(/[\r\n]+/g, " ").slice(0, 45);
+      return k + "=" + String(sv).replace(/[\r\n]+/g, " ").slice(0, 40);
     }).join(" | ");
-    info.t += "; campos: " + resumen;
+    info.t += "; " + etiqueta + " campos: " + resumen;
     return null;
   }
-
   const v = buscarVideo(txt);
+  if (!v) info.t += "; " + etiqueta + " sin video";
+  return v;
+}
+
+// Pide una URL del reproductor rpmvid y descifra la respuesta si viene en hex
+async function pedirRpm(url, og, info, etiqueta) {
+  const r = await kino.fetch(url, {
+    headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og }
+  });
+  const crudo = r.text().trim();
+  info.t += "; " + etiqueta + " http" + r.status + " len" + crudo.length;
+  if (!r.ok || !crudo) return "";
+  if (/^[0-9a-f]+$/i.test(crudo) && crudo.length % 32 === 0) {
+    try {
+      const d = await descifrarRpm(crudo);
+      info.t += " dec" + d.length;
+      return d;
+    } catch (e) {
+      info.t += " decfallo:" + String((e && e.message) || e).slice(0, 60);
+      return "";
+    }
+  }
+  return crudo;
+}
+
+async function resolverRpm(embed, info) {
+  let id = "";
+  if (embed.indexOf("#") >= 0) id = embed.split("#")[1];
+  else {
+    const mid = embed.match(/(?:[?&]id=|embed\/)([A-Za-z0-9_-]+)/);
+    if (mid) id = mid[1];
+  }
+  id = String(id || "").trim();
+  if (!id) { info.t += "; rpm sin id"; return null; }
+
+  const og = new URL(embed).origin;
+  const eid = encodeURIComponent(id);
+  const referer = encodeURIComponent(og + "/");
+
+  // 1) info: suele traer solo la configuración, pero por si trae el video
+  let txt = "";
+  try { txt = await pedirRpm(og + "/api/v1/info?id=" + eid, og, info, "info"); } catch (e) { info.t += "; info error:" + String((e && e.message) || e).slice(0, 50); }
+  let v = txt ? sacarDeTexto(txt, og, info, "i") : null;
   if (v) return v;
-  info.t += "; sin campo de video";
-  return null;
+
+  // 2) video: aquí debería venir la dirección del stream
+  const rutas = [
+    og + "/api/v1/video?id=" + eid + "&w=1920&h=1080&r=" + referer,
+    og + "/api/v1/video?id=" + eid + "&w=1280&h=720&r="
+  ];
+  for (let i = 0; i < rutas.length && !v; i++) {
+    try {
+      const t2 = await pedirRpm(rutas[i], og, info, "V" + (i + 1));
+      if (t2) v = sacarDeTexto(t2, og, info, "v" + (i + 1));
+    } catch (e) {
+      info.t += "; V" + (i + 1) + " error:" + String((e && e.message) || e).slice(0, 50);
+    }
+  }
+  return v;
 }
 
 export async function resolve(ref) {
