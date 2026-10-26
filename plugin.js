@@ -122,7 +122,7 @@ function limpiar(t) {
     .replace(/\\+u0026/gi, "&").replace(/\\+u003d/gi, "=").replace(/\\+\//g, "/").replace(/\\+"/g, '"');
 }
 
-// Extractor unificado
+// Extractor unificado corregido
 function buscarVideo(html) {
   const t = limpiar(html);
   
@@ -152,7 +152,8 @@ function embedDe(html) {
     const u = abs(f.attrs["data-src"] || f.attrs.src);
     if (u.indexOf("https://") === 0) return u;
   }
-  const m = String(html).match(/https?:\/\/(?:www\.)?(?:ok\.ru\/videoembed|cubeembed\.rpmvid\.com\/[^\s"'<>]+)\d*/i);
+  // Expresión regular ajustada para capturar el embed completo
+  const m = String(html).match(/https?:\/\/(?:www\.)?(?:ok\.ru\/videoembed|cubeembed\.rpmvid\.com\/embed)[^\s"'<>]+/i);
   return m ? m[0] : "";
 }
 
@@ -178,35 +179,37 @@ export async function resolve(ref) {
       const intentos = [];
       
       // --- CORRECCIÓN PARA CUBEEMBED (rpmvid) ---
-      if (embed.includes("://rpmvid.com")) {
-        const matchId = embed.match(/(?:#|\.com\/)([A-Za-z0-9_-]+)/);
+      if (embed.includes("rpmvid.com")) {
+        // Corregido el error de doble protocolo https://://
+        intentos.push(embed); 
+        const matchId = embed.match(/(?:id=|embed\/)([A-Za-z0-9_-]+)/);
         if (matchId) {
           const videoId = matchId[1];
-          intentos.push("https://://rpmvid.com/" + videoId);
-          intentos.push("https://://rpmvid.com/?id=" + videoId);
+          intentos.push("https://rpmvid.com" + videoId);
+          intentos.push("https://rpmvid.com" + videoId);
         }
-      }
-      
-      // --- VARIANTES PARA OK.RU ---
-      const hm = embed.match(/^(https:\/\/[^\/#?]+)\/?#([A-Za-z0-9_-]+)/);
-      if (hm && embed.includes("ok.ru")) {
-        intentos.push(hm[1] + "/api/v1/video?id=" + hm[2] + "&w=1280&h=720&r=" + encodeURIComponent(WEB + "/"));
-      }
-      
-      intentos.push(embed);
-      
-      if (embed.indexOf("/videoembed/") >= 0) {
-        intentos.push(embed.replace("/videoembed/", "/video/"));
+      } else {
+        // --- VARIANTES PARA OK.RU ---
+        intentos.push(embed);
+        if (embed.indexOf("/videoembed/") >= 0) {
+          intentos.push(embed.replace("/videoembed/", "/video/"));
+        }
       }
 
       for (let i = 0; i < intentos.length && !v; i++) {
         const u = intentos[i], et = "ABCDE"[i] || "X";
         try {
+          // El Referer para los servidores siempre debe ser el propio iframe o su dominio base, no lacartoons
+          let customReferer = u;
+          if (u.includes("rpmvid.com")) {
+            customReferer = "https://rpmvid.com";
+          }
+
           const r = await kino.fetch(u, { 
             headers: { 
               "User-Agent": UA_PC, 
               "Accept-Language": "es-419,es;q=0.9", 
-              "Referer": u.includes("rpmvid") ? WEB + "/" : embed.split("#")[0] 
+              "Referer": customReferer
             } 
           });
           const tx = r.text();
@@ -226,6 +229,7 @@ export async function resolve(ref) {
     if (embed) ori = new URL(embed).origin + "/"; 
   } catch (e) {}
   
+  // Enviamos las cabeceras necesarias para que Zynora pueda reproducir el flujo final
   const salida = { url: v.url, headers: { Referer: ori, "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
   return salida;
