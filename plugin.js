@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.6)
+//  Plugin LACartoons para Zynora  (v1.1.7)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -209,7 +209,7 @@ async function resolverRpm(embed, info) {
   if (/^[0-9a-f]+$/i.test(crudo) && crudo.length % 32 === 0) {
     try {
       txt = await descifrarRpm(crudo);
-      info.t += "; dec ok «" + txt.slice(0, 120).replace(/[\r\n]+/g, " ") + "»";
+      info.t += "; dec ok len" + txt.length;
     } catch (e) {
       info.t += "; dec fallo:" + String((e && e.message) || e).slice(0, 80);
       return null;
@@ -218,25 +218,49 @@ async function resolverRpm(embed, info) {
     info.t += "; respuesta no es hex";
   }
 
-  let v = buscarVideo(txt);
-  if (v) return v;
+  // El campo "ads" trae basura de publicidad: lo quitamos antes de buscar
+  let obj = null;
+  try { obj = JSON.parse(txt); } catch (e) {}
+  if (obj && typeof obj === "object") {
+    delete obj.ads;
+    const cands = [];
+    const recorrer = function (o, ruta, prof) {
+      if (prof > 4 || !o || typeof o !== "object") return;
+      Object.keys(o).forEach(function (k) {
+        const val = o[k];
+        if (typeof val === "string") {
+          const val2 = limpiar(val).trim();
+          let pts = 0;
+          if (/m3u8/i.test(val2)) pts += 5;
+          if (/hlsmod/i.test(val2)) pts += 4;
+          if (/^(https?:)?\/\//i.test(val2) || val2[0] === "/") pts += 1;
+          if (/hls|source|file|^cf$|stream|video|src|url/i.test(k)) pts += 2;
+          if (pts >= 3 && val2.length < 600 && /^(https?:)?\/|^[\w.-]+\//.test(val2)) cands.push({ k: ruta + k, v: val2, p: pts });
+        } else if (val && typeof val === "object") recorrer(val, ruta + k + ".", prof + 1);
+      });
+    };
+    recorrer(obj, "", 0);
+    cands.sort(function (x, y) { return y.p - x.p; });
+    if (cands.length) {
+      let u = cands[0].v;
+      if (u.indexOf("//") === 0) u = "https:" + u;
+      else if (u[0] === "/") u = og + u;
+      else if (!/^https?:/i.test(u)) u = og + "/" + u;
+      info.t += "; usé campo " + cands[0].k;
+      return { url: u, mime: /\.mp4/i.test(u) ? "video/mp4" : "application/x-mpegURL" };
+    }
+    // Diagnóstico: claves y primeros caracteres de cada valor
+    const resumen = Object.keys(obj).slice(0, 14).map(function (k) {
+      const val = obj[k];
+      const sv = typeof val === "string" ? val : JSON.stringify(val);
+      return k + "=" + String(sv).replace(/[\r\n]+/g, " ").slice(0, 45);
+    }).join(" | ");
+    info.t += "; campos: " + resumen;
+    return null;
+  }
 
-  // Ruta relativa o campo conocido dentro del JSON descifrado
-  const limpio = limpiar(txt);
-  let m = limpio.match(/"(?:source|file|hls|cf|url|src)"\s*:\s*"([^"]+\.m3u8[^"]*)"/i) || limpio.match(/"([^"]*\.m3u8[^"]*)"/i);
-  if (m) {
-    let u = m[1];
-    if (u.indexOf("//") === 0) u = "https:" + u;
-    else if (u[0] === "/") u = og + u;
-    return { url: u, mime: "application/x-mpegURL" };
-  }
-  m = limpio.match(/"(?:source|file|hls|cf)"\s*:\s*"([^"]+)"/i);
-  if (m) {
-    let u = m[1];
-    if (u.indexOf("//") === 0) u = "https:" + u;
-    else if (u[0] === "/") u = og + u;
-    return { url: u, mime: /\.mp4/i.test(u) ? "video/mp4" : "application/x-mpegURL" };
-  }
+  const v = buscarVideo(txt);
+  if (v) return v;
   info.t += "; sin campo de video";
   return null;
 }
