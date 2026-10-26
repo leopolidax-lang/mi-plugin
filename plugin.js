@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.12)
+//  Plugin LACartoons para Zynora  (v1.1.13)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -13,7 +13,7 @@ const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "
 // Clave y vector del reproductor rpmvid/cubeembed (SIN VERIFICAR: si falla,
 // el mensaje de error lo dirá en "dec ...").
 // MODO DIAGNÓSTICO: en true NO reproduce, solo muestra qué enlace encontró. Pon false para reproducir.
-const DEBUG = false;
+const DEBUG = true;
 
 const RPM_KEY = "kiemtienmua911ca";
 const RPM_IV = "1234567890oiuytr";
@@ -287,7 +287,7 @@ async function validarHls(v, og, texto, info) {
       const r = await kino.fetch(vars[i], { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og } });
       const tx = r.text();
       const ok = /^\s*#EXTM3U/.test(tx);
-      info.t += "; H" + (i + 1) + " http" + r.status + (ok ? " HLS-OK" : " no-hls len" + tx.length);
+      info.t += "; H" + (i + 1) + " http" + r.status + (ok ? " HLS-OK" : " no-hls len" + tx.length) + " «" + tx.replace(/[\r\n]+/g, " ").slice(0, ok ? 150 : 60) + "»";
       if (ok) return { url: vars[i], mime: "application/x-mpegURL" };
     } catch (e) {
       info.t += "; H" + (i + 1) + " error:" + String((e && e.message) || e).slice(0, 40);
@@ -383,7 +383,7 @@ export async function resolve(ref) {
   let ori = "https://ok.ru/";
   try { if (embed) ori = new URL(embed).origin + "/"; } catch (e) {}
 
-  if (DEBUG) throw kino.error("not_found", "DEBUG enlace=" + v.url.slice(0, 230) + " | tipo=" + (v.mime || "?") + " | referer=" + ori + " | " + info.t.slice(-260));
+  if (DEBUG) throw kino.error("not_found", "DEBUG enlace=" + v.url.slice(0, 170) + " | " + info.t.slice(-520));
 
   const salida = { url: v.url, headers: { Referer: ori, Origin: ori.replace(/\/$/, ""), "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
