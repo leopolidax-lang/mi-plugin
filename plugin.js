@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.14)
+//  Plugin LACartoons para Zynora  (v1.1.15)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -13,7 +13,7 @@ const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "
 // Clave y vector del reproductor rpmvid/cubeembed (SIN VERIFICAR: si falla,
 // el mensaje de error lo dirá en "dec ...").
 // MODO DIAGNÓSTICO: en true NO reproduce, solo muestra qué enlace encontró. Pon false para reproducir.
-const DEBUG = true;
+const DEBUG = false;
 
 const RPM_KEY = "kiemtienmua911ca";
 const RPM_IV = "1234567890oiuytr";
@@ -355,7 +355,17 @@ async function diagHls(url, ori) {
       const u3 = rel(segs[0], u2);
       try {
         const r3 = await kino.fetch(u3, { headers: h });
-        out += " | S http" + r3.status + " len" + r3.text().length;
+        const b = r3.text();
+        let ct = "";
+        try { ct = (r3.headers && (r3.headers["content-type"] || (r3.headers.get && r3.headers.get("content-type")))) || ""; } catch (e2) {}
+        let cab = "";
+        for (let q = 0; q < 24 && q < b.length; q++) cab += b.charCodeAt(q).toString(16) + " ";
+        const iend = b.indexOf("IEND");
+        let g = -1;
+        for (let q = 0; q < Math.min(b.length - 400, 200000) && g < 0; q++) {
+          if (b.charCodeAt(q) === 0x47 && b.charCodeAt(q + 188) === 0x47 && b.charCodeAt(q + 376) === 0x47) g = q;
+        }
+        out += " | S http" + r3.status + " len" + b.length + " ct=" + String(ct).slice(0, 30) + " head=" + cab + " IEND@" + iend + " ts@" + g;
       } catch (e) { out += " | S error:" + String((e && e.message) || e).slice(0, 50); }
     }
   }
