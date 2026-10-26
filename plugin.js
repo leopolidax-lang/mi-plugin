@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.13)
+//  Plugin LACartoons para Zynora  (v1.1.14)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -332,6 +332,36 @@ async function resolverRpm(embed, info) {
   return v;
 }
 
+// Solo para diagnóstico: mira dentro de la lista HLS (variantes, audio, segmentos)
+async function diagHls(url, ori) {
+  const h = { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": ori, "Origin": ori.replace(/\/$/, "") };
+  const corto = function (x, n) { return String(x).replace(/^https?:\/\//, "").slice(0, n); };
+  const rel = function (r, base) { try { return new URL(r, base).href; } catch (e) { return r; } };
+  let out = "";
+  const r = await kino.fetch(url, { headers: h });
+  const tx = r.text();
+  const uris = tx.split(/\r?\n/).filter(function (l) { return l && l[0] !== "#"; });
+  const au = (tx.match(/URI="([^"]+)"/) || [])[1];
+  out += "M len" + tx.length + " var=" + uris.length + " v1=" + corto(uris[0] || "-", 40) + " aud=" + corto(au || "-", 30);
+  if (uris[0]) {
+    const u2 = rel(uris[0], url);
+    const r2 = await kino.fetch(u2, { headers: h });
+    const t2 = r2.text();
+    const ls = t2.split(/\r?\n/);
+    const segs = ls.filter(function (l) { return l && l[0] !== "#"; });
+    const key = ls.filter(function (l) { return /EXT-X-KEY|EXT-X-MAP/.test(l); })[0];
+    out += " | P http" + r2.status + " len" + t2.length + " segs=" + segs.length + " key=" + corto(key || "no", 50) + " s1=" + corto(segs[0] || "-", 70);
+    if (segs[0]) {
+      const u3 = rel(segs[0], u2);
+      try {
+        const r3 = await kino.fetch(u3, { headers: h });
+        out += " | S http" + r3.status + " len" + r3.text().length;
+      } catch (e) { out += " | S error:" + String((e && e.message) || e).slice(0, 50); }
+    }
+  }
+  return out;
+}
+
 export async function resolve(ref) {
   if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "LACartoons: " + String(ref).slice(5));
 
@@ -383,7 +413,11 @@ export async function resolve(ref) {
   let ori = "https://ok.ru/";
   try { if (embed) ori = new URL(embed).origin + "/"; } catch (e) {}
 
-  if (DEBUG) throw kino.error("not_found", "DEBUG enlace=" + v.url.slice(0, 170) + " | " + info.t.slice(-520));
+  if (DEBUG) {
+    let extra = "";
+    try { extra = await diagHls(v.url, ori); } catch (e) { extra = "diag error:" + String((e && e.message) || e).slice(0, 80); }
+    throw kino.error("not_found", "DEBUG " + extra);
+  }
 
   const salida = { url: v.url, headers: { Referer: ori, Origin: ori.replace(/\/$/, ""), "User-Agent": UA_PC } };
   if (v.mime) salida.mime = v.mime;
