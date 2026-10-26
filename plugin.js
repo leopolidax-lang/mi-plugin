@@ -13,7 +13,7 @@ const VACIAS = ["el", "la", "los", "las", "de", "del", "y", "en", "un", "una", "
 // Clave y vector del reproductor rpmvid/cubeembed (SIN VERIFICAR: si falla,
 // el mensaje de error lo dirá en "dec ...").
 // MODO DIAGNÓSTICO: en true NO reproduce, solo muestra qué enlace encontró. Pon false para reproducir.
-const DEBUG = false;
+const DEBUG = true;
 
 const RPM_KEY = "kiemtienmua911ca";
 const RPM_IV = "1234567890oiuytr";
