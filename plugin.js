@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.16)
+//  Plugin LACartoons para Zynora  (v1.1.17)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -311,19 +311,21 @@ async function resolverRpm(embed, info) {
   const referer = encodeURIComponent(og + "/");
 
   // 1) info: suele traer solo la configuración, pero por si trae el video
+  const rutas = [
+    og + "/api/v1/video?id=" + eid + "&w=1366&h=768&r=lacartoons.com",
+    og + "/api/v1/video?id=" + eid + "&w=1920&h=1080&r=" + referer
+  ];
+  // la primera ruta de video se pide a la vez que "info" para no esperar dos veces
+  const pre = pedirRpm(rutas[0], og, info, "V1").catch(function (e) { info.t += "; V1 error:" + String((e && e.message) || e).slice(0, 50); return ""; });
   let txt = "";
   try { txt = await pedirRpm(og + "/api/v1/info?id=" + eid, og, info, "info"); } catch (e) { info.t += "; info error:" + String((e && e.message) || e).slice(0, 50); }
   let v = txt ? sacarDeTexto(txt, og, info, "i") : null;
   if (v) return v;
 
   // 2) video: aquí debería venir la dirección del stream
-  const rutas = [
-    og + "/api/v1/video?id=" + eid + "&w=1366&h=768&r=lacartoons.com",
-    og + "/api/v1/video?id=" + eid + "&w=1920&h=1080&r=" + referer
-  ];
   for (let i = 0; i < rutas.length && !v; i++) {
     try {
-      const t2 = await pedirRpm(rutas[i], og, info, "V" + (i + 1));
+      const t2 = i === 0 ? await pre : await pedirRpm(rutas[i], og, info, "V" + (i + 1));
       if (t2) { v = sacarDeTexto(t2, og, info, "v" + (i + 1)); if (v) v = await validarHls(v, og, t2, info); }
     } catch (e) {
       info.t += "; V" + (i + 1) + " error:" + String((e && e.message) || e).slice(0, 50);
@@ -376,7 +378,7 @@ export async function resolve(ref) {
   if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "LACartoons: " + String(ref).slice(5));
 
   const pagina = await pedir(ref, WEB + "/");
-  if (!pagina.ok) throw kino.error("not_found", "LACartoons respondió HTTP " + pagina.status);
+  if (!pagina.ok) throw kino.error("not_found", "Episodio no disponible", { userMessage: "Episodio no disponible" });
 
   const html = pagina.text();
   const info = { t: "pag " + html.length };
@@ -418,7 +420,10 @@ export async function resolve(ref) {
     }
   }
 
-  if (!v) throw kino.error("not_found", "No se encontró el video [" + info.t + "]");
+  if (!v) {
+    try { console.log("LACartoons sin video: " + info.t); } catch (e) {}
+    throw kino.error("not_found", "Episodio no disponible", { userMessage: "Episodio no disponible" });
+  }
 
   let ori = "https://ok.ru/";
   try { if (embed) ori = new URL(embed).origin + "/"; } catch (e) {}
