@@ -1,0 +1,31 @@
+{
+  "id": "lacartoons",
+  "name": "LACartoons",
+  "version": "1.1.18",
+  "apiVersion": 4,
+  "entry": "plugin.js",
+  "description": "Series clásicas y caricaturas en español latino de lacartoons.com",
+  "author": "leopolidax-lang",
+  "hosts": [
+    "lacartoons.com",
+    "*.lacartoons.com",
+    "ok.ru",
+    "*.ok.ru",
+    "rpmvid.com",
+    "*.rpmvid.com",
+    "tiktokcdn.com",
+    "*.tiktokcdn.com"
+  ],
+  "streamHosts": "any",
+  "capabilities": [
+    "home",
+    "search",
+    "episodes",
+    "resolve"
+  ],
+  "color": "#F5A623",
+  "categories": [
+    "series"
+  ],
+  "fetchHosts": "any"
+}

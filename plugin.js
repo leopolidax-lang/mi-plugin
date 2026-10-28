@@ -1,5 +1,5 @@
 // ============================================================
-//  Plugin LACartoons para Zynora  (v1.1.17)
+//  Plugin LACartoons para Zynora  (v1.1.18)
 //  /serie/NUMERO                  -> ficha de la serie con la lista de episodios
 //  /serie/capitulo/NUMERO?t=TEMP  -> página del episodio (iframe ok.ru / cubeembed)
 // ============================================================
@@ -36,12 +36,12 @@ function palabras(s) { return norm(s).split(" ").filter(function (w) { return w 
 function pedir(url, referer) {
   const h = { "User-Agent": UA, "Accept-Language": "es-419,es;q=0.9", "Accept": "text/html,application/xhtml+xml,*/*" };
   if (referer) h.Referer = referer;
-  return kino.fetch(url, { headers: h });
+  return zynora.fetch(url, { headers: h });
 }
 
 function leerTarjetas(html) {
   const out = [], vistos = {};
-  for (const a of kino.html.select(html, 'a[href*="/serie/"]')) {
+  for (const a of zynora.html.select(html, 'a[href*="/serie/"]')) {
     const m = String(a.attrs.href || "").match(/\/serie\/(\d+)\/?$/);
     if (!m || vistos[m[1]]) continue;
     const t = String(a.text || "").trim();
@@ -56,7 +56,7 @@ function leerTarjetas(html) {
 async function cargarCatalogo() {
   if (CATALOGO) return CATALOGO;
   try {
-    const g = kino.storage.get("cat");
+    const g = zynora.storage.get("cat");
     if (g) {
       const o = JSON.parse(g);
       if (o && Date.now() - o.t < 7 * 86400000 && o.l && o.l.length > 20) { CATALOGO = o.l; return CATALOGO; }
@@ -78,7 +78,7 @@ async function cargarCatalogo() {
   const lista = leerTarjetas(h1).concat(resto.flat()).filter(function (x) { if (visto[x.n]) return false; visto[x.n] = 1; return true; });
   if (!lista.length) { ULTIMO_ERROR = "sin tarjetas en la página"; return []; }
   CATALOGO = lista;
-  try { kino.storage.set("cat", JSON.stringify({ t: Date.now(), l: lista.map(function (x) { return { n: x.n, title: x.title, year: x.year }; }) })); } catch (e) {}
+  try { zynora.storage.set("cat", JSON.stringify({ t: Date.now(), l: lista.map(function (x) { return { n: x.n, title: x.title, year: x.year }; }) })); } catch (e) {}
   return CATALOGO;
 }
 
@@ -109,11 +109,71 @@ export async function search(q) {
   return [{ id: "lc-diag", ref: "diag:" + motivo.slice(0, 200), title: "[Diagnóstico] " + motivo, kind: "movie" }];
 }
 
+// ---------- Catálogo para la pestaña «Plugins» ----------
+function atributo(tag, nombre) {
+  const m = tag.match(new RegExp("\\s" + nombre + "\\s*=\\s*[\"']([^\"']+)[\"']", "i"));
+  return m ? m[1].trim() : "";
+}
+function posterDe(html) {
+  const tags = String(html || "").match(/<img\b[^>]*>/gi) || [];
+  for (let i = 0; i < tags.length; i++) {
+    const u = atributo(tags[i], "data-src") || atributo(tags[i], "data-lazy-src") || atributo(tags[i], "src");
+    if (u && u.indexOf("data:") !== 0) return abs(u);
+  }
+  const bg = String(html || "").match(/url\(["']?([^"')]+)["']?\)/i);
+  return bg ? abs(bg[1]) : "";
+}
+// Une el título y la imagen aunque estén en enlaces distintos de la misma tarjeta
+function leerTarjetasConPoster(html) {
+  const mapa = {}, orden = [];
+  for (const a of seleccionarTarjetas(html)) {
+    const m = String(a.attrs.href || "").match(/\/serie\/(\d+)\/?$/);
+    if (!m) continue;
+    let o = mapa[m[1]];
+    if (!o) { o = mapa[m[1]] = { n: m[1], title: "", year: "", poster: "" }; orden.push(m[1]); }
+    const t = String(a.text || "").trim();
+    if (t && !o.title) {
+      const mm = t.match(RE_TARJETA);
+      o.title = ((mm ? mm[1] : t).trim() || t).slice(0, 150);
+      o.year = mm ? mm[3] : "";
+    }
+    if (!o.poster) o.poster = posterDe(a.html);
+  }
+  return orden.map(function (k) { return mapa[k]; }).filter(function (x) { return x.title && x.poster; });
+}
+function seleccionarTarjetas(html) { return zynora.html.select(html, 'a[href*="/serie/"]'); }
+function comoItem(x) {
+  return { id: "lc-" + x.n, ref: abs("/serie/" + x.n), title: x.title, kind: "series", year: x.year, poster: x.poster };
+}
+
+export async function home() {
+  const paginas = [1, 2, 3, 4, 5, 6];
+  const lotes = await Promise.all(paginas.map(async function (p) {
+    try { const r = await pedir(WEB + (p === 1 ? "/" : "/?page=" + p)); return r.ok ? leerTarjetasConPoster(r.text()) : []; } catch (e) { return []; }
+  }));
+  const visto = {};
+  const todas = lotes.flat().filter(function (x) { if (visto[x.n]) return false; visto[x.n] = 1; return true; });
+  if (!todas.length) return [];
+  const filas = [{ id: "novedades", title: "Novedades", items: todas.slice(0, 20).map(comoItem) }];
+  const anio = function (x) { return Number(x.year) || 0; };
+  const grupos = [
+    ["anos-2000", "De los 2000 en adelante", function (x) { return anio(x) >= 2000; }],
+    ["anos-90", "Clásicas de los 90", function (x) { return anio(x) >= 1990 && anio(x) < 2000; }],
+    ["anos-80", "De los 80 y antes", function (x) { return anio(x) > 0 && anio(x) < 1990; }]
+  ];
+  grupos.forEach(function (g) {
+    const l = todas.filter(g[2]);
+    if (l.length >= 6) filas.push({ id: g[0], title: g[1], items: l.slice(0, 30).map(comoItem) });
+  });
+  if (todas.length > 20) filas.push({ id: "mas-series", title: "Más series", items: todas.slice(20, 60).map(comoItem) });
+  return filas;
+}
+
 export async function episodes(ref) {
   const r = await pedir(ref, WEB + "/");
-  if (!r.ok) throw kino.error("not_found", "HTTP " + r.status, { userMessage: "No se pudo abrir la serie en LACartoons (HTTP " + r.status + ")." });
+  if (!r.ok) throw zynora.error("not_found", "HTTP " + r.status, { userMessage: "No se pudo abrir la serie en LACartoons (HTTP " + r.status + ")." });
   const eps = [], vistos = {};
-  for (const a of kino.html.select(r.text(), 'a[href*="/serie/capitulo/"]')) {
+  for (const a of zynora.html.select(r.text(), 'a[href*="/serie/capitulo/"]')) {
     const url = abs(a.attrs.href);
     if (vistos[url]) continue;
     const num = String(a.text || "").match(/Cap[ií]tulo\s+(\d+)\s*-?\s*(.*)$/i);
@@ -159,7 +219,7 @@ function embedDe(html) {
   // Primero, un iframe que sea un reproductor conocido (evita anuncios)
   const conocidos = /ok\.ru\/videoembed|rpmvid\.com/i;
   let primero = "";
-  for (const f of kino.html.select(html, "iframe")) {
+  for (const f of zynora.html.select(html, "iframe")) {
     const u = abs(f.attrs["data-src"] || f.attrs.src);
     if (u.indexOf("https://") !== 0) continue;
     if (conocidos.test(u)) return u;
@@ -247,7 +307,7 @@ function sacarDeTexto(txt, og, info, etiqueta) {
 
 // Pide una URL del reproductor rpmvid y descifra la respuesta si viene en hex
 async function pedirRpm(url, og, info, etiqueta) {
-  const r = await kino.fetch(url, {
+  const r = await zynora.fetch(url, {
     headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og }
   });
   const crudo = r.text().trim();
@@ -284,7 +344,7 @@ async function validarHls(v, og, texto, info) {
   vars.push(v.url);
   for (let i = 0; i < vars.length; i++) {
     try {
-      const r = await kino.fetch(vars[i], { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og } });
+      const r = await zynora.fetch(vars[i], { headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": og + "/", "Origin": og } });
       const tx = r.text();
       const ok = /^\s*#EXTM3U/.test(tx);
       info.t += "; H" + (i + 1) + " http" + r.status + (ok ? " HLS-OK" : " no-hls len" + tx.length) + " «" + tx.replace(/[\r\n]+/g, " ").slice(0, ok ? 150 : 60) + "»";
@@ -340,14 +400,14 @@ async function diagHls(url, ori) {
   const corto = function (x, n) { return String(x).replace(/^https?:\/\//, "").slice(0, n); };
   const rel = function (r, base) { try { return new URL(r, base).href; } catch (e) { return r; } };
   let out = "";
-  const r = await kino.fetch(url, { headers: h });
+  const r = await zynora.fetch(url, { headers: h });
   const tx = r.text();
   const uris = tx.split(/\r?\n/).filter(function (l) { return l && l[0] !== "#"; });
   const au = (tx.match(/URI="([^"]+)"/) || [])[1];
   out += "M len" + tx.length + " var=" + uris.length + " v1=" + corto(uris[0] || "-", 40) + " aud=" + corto(au || "-", 30);
   if (uris[0]) {
     const u2 = rel(uris[0], url);
-    const r2 = await kino.fetch(u2, { headers: h });
+    const r2 = await zynora.fetch(u2, { headers: h });
     const t2 = r2.text();
     const ls = t2.split(/\r?\n/);
     const segs = ls.filter(function (l) { return l && l[0] !== "#"; });
@@ -356,7 +416,7 @@ async function diagHls(url, ori) {
     if (segs[0]) {
       const u3 = rel(segs[0], u2);
       try {
-        const r3 = await kino.fetch(u3, { headers: h });
+        const r3 = await zynora.fetch(u3, { headers: h });
         const b = r3.text();
         let ct = "";
         try { ct = (r3.headers && (r3.headers["content-type"] || (r3.headers.get && r3.headers.get("content-type")))) || ""; } catch (e2) {}
@@ -375,10 +435,10 @@ async function diagHls(url, ori) {
 }
 
 export async function resolve(ref) {
-  if (String(ref).indexOf("diag:") === 0) throw kino.error("not_found", "LACartoons: " + String(ref).slice(5));
+  if (String(ref).indexOf("diag:") === 0) throw zynora.error("not_found", "LACartoons: " + String(ref).slice(5));
 
   const pagina = await pedir(ref, WEB + "/");
-  if (!pagina.ok) throw kino.error("not_found", "Episodio no disponible", { userMessage: "Episodio no disponible" });
+  if (!pagina.ok) throw zynora.error("not_found", "Episodio no disponible", { userMessage: "Episodio no disponible" });
 
   const html = pagina.text();
   const info = { t: "pag " + html.length };
@@ -407,7 +467,7 @@ export async function resolve(ref) {
       for (let i = 0; i < intentos.length && !v; i++) {
         const u = intentos[i], et = "ABCDE"[i] || "X";
         try {
-          const r = await kino.fetch(u, {
+          const r = await zynora.fetch(u, {
             headers: { "User-Agent": UA_PC, "Accept-Language": "es-419,es;q=0.9", "Referer": WEB + "/", "Origin": origen.replace(/\/$/, "") }
           });
           const tx = r.text();
@@ -422,7 +482,7 @@ export async function resolve(ref) {
 
   if (!v) {
     try { console.log("LACartoons sin video: " + info.t); } catch (e) {}
-    throw kino.error("not_found", "Episodio no disponible", { userMessage: "Episodio no disponible" });
+    throw zynora.error("not_found", "Episodio no disponible", { userMessage: "Episodio no disponible" });
   }
 
   let ori = "https://ok.ru/";
@@ -431,7 +491,7 @@ export async function resolve(ref) {
   if (DEBUG) {
     let extra = "";
     try { extra = await diagHls(v.url, ori); } catch (e) { extra = "diag error:" + String((e && e.message) || e).slice(0, 80); }
-    throw kino.error("not_found", "DEBUG " + extra);
+    throw zynora.error("not_found", "DEBUG " + extra);
   }
 
   const salida = { url: v.url, headers: { Referer: ori, Origin: ori.replace(/\/$/, ""), "User-Agent": UA_PC } };
